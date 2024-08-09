@@ -13,6 +13,8 @@ OBJS_EXTRA :=
 # command line option
 OPTS :=
 
+LDFLAGS :=
+
 # virtio-blk
 ENABLE_VIRTIOBLK ?= 1
 $(call set-feature, VIRTIOBLK)
@@ -39,6 +41,18 @@ endif
 $(call set-feature, VIRTIONET)
 ifeq ($(call has, VIRTIONET), 1)
     OBJS_EXTRA += virtio-net.o
+endif
+
+# virtio-snd
+ENABLE_VIRTIOSND ?= 1
+ifneq ($(UNAME_S),Linux)
+    ENABLE_VIRTIOSND := 0
+endif
+$(call set-feature, VIRTIOSND)
+ifeq ($(call has, VIRTIOSND), 1)
+    OBJS_EXTRA += virtio-snd.o
+    LDFLAGS += -lasound
+    CFLAGS += -I/usr/local/include
 endif
 
 BIN = semu

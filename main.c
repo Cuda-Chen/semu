@@ -72,14 +72,25 @@ static void emu_update_vblk_interrupts(vm_t *vm)
 }
 #endif
 
-static void emu_update_timer_interrupt(hart_t *hart)
-{
+static void emu_update_timer_interrupt(hart_t *hart) {
     emu_state_t *data = PRIV(hart);
 
     /* Sync global timer with local timer */
     hart->time = data->clint.mtime;
     clint_update_interrupts(hart, &data->clint);
 }
+
+#if SEMU_HAS(VIRTIOSND)
+static void emu_update_vsnd_interrupts(vm_t *vm)
+{
+    emu_state_t *data = PRIV(vm);
+    if (data->vsnd.InterruptStatus)
+        data->plic.active |= IRQ_VSND_BIT;
+    else
+        data->plic.active &= ~IRQ_VSND_BIT;
+    plic_update_interrupts(vm, &data->plic);
+}
+#endif
 
 static void mem_load(hart_t *hart,
                      uint32_t addr,
@@ -121,6 +132,13 @@ static void mem_load(hart_t *hart,
             clint_read(hart, &data->clint, addr & 0xFFFFF, width, value);
             clint_update_interrupts(hart, &data->clint);
             return;
+
+#if SEMU_HAS(VIRTIOSND)
+        case 0x44: /* virtio-snd */
+            virtio_snd_write(vm, &data->vsnd, addr & 0xFFFFF, width, value);
+            emu_update_vsnd_interrupts(vm);
+            return;
+#endif
         }
     }
     vm_set_exception(hart, RV_EXC_LOAD_FAULT, hart->exc_val);
@@ -581,6 +599,10 @@ static int semu_start(int argc, char **argv)
     emu.vblk.ram = emu.ram;
     emu.disk = virtio_blk_init(&(emu.vblk), disk_file);
 #endif
+#if SEMU_HAS(VIRTIOSND)
+    emu.vsnd.ram = emu.ram;
+    virtio_snd_init(&(emu.vsnd));
+#endif
 
     /* Emulate */
     uint32_t peripheral_update_ctr = 0;
@@ -602,6 +624,11 @@ static int semu_start(int argc, char **argv)
 #if SEMU_HAS(VIRTIOBLK)
                 if (emu.vblk.InterruptStatus)
                     emu_update_vblk_interrupts(&vm);
+#endif
+
+#if SEMU_HAS(VIRTIOSND)
+            if (emu.vsnd.InterruptStatus)
+                emu_update_vsnd_interrupts(&vm);
 #endif
             }
 

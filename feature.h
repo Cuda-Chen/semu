@@ -12,5 +12,10 @@
 #define SEMU_FEATUREVIRTIONET 1
 #endif
 
+/* virtio-snd */
+#ifndef SEMU_FEATUREVIRTIOSND
+#define SEMU_FEATUREVIRTIOSND 1
+#endif
+
 /* Feature test macro */
 #define SEMU_HAS(x) SEMU_FEATURE_##x
