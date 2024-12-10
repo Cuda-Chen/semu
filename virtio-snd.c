@@ -265,6 +265,7 @@ typedef struct {
 /* Adapted from DPDK ring buffer. */
 /* https://github.com/scylladb/dpdk/blob/master/lib/librte_ring/rte_ring.h#L147
  */
+#define VSND_RING_SZ_MASK (uint32_t)(0x0fffffff) /* ring size mask */
 typedef struct {
     void *buffer;
     struct prod {
@@ -490,6 +491,10 @@ static void virtio_snd_read_pcm_prepare(const virtio_snd_pcm_hdr_t *query,
         0, 1, 0, buffer_bytes, NULL, NULL, &v);
     vsnd_props[stream_id].ring.buffer =
         (void *) malloc(sizeof(void) * buffer_bytes);
+    vsnd_props[stream_id].ring.prod.head = 0;
+    vsnd_props[stream_id].ring.prod.tail = 0;
+    vsnd_props[stream_id].ring.cons.head = 0;
+    vsnd_props[stream_id].ring.cons.tail = 0;
 
     *plen = 0;
     fprintf(stderr, "virtio_snd_read_pcm_prepare\n");
@@ -718,6 +723,32 @@ static int virtio_snd_desc_handler(virtio_snd_state_t *vsnd,
 }
 
 
+static void __virtio_snd_frame_enqueue(void *payload,
+                                       uint32_t len,
+                                       uint32_t stream_id)
+{
+    uint32_t prod_head, cons_tail;
+    uint32_t prod_next, free_entries;
+    virtio_snd_prop_t props =
+        vsnd_props[stream_id]; /* XXX: access the address for the ease of data
+                                  manipulation */
+    uint32_t mask = props.pp.buffer_bytes;
+
+    prod_head = props.ring.prod.head;
+    cons_tail = props.ring.cons.tail;
+    /* The subtraction is done between two unsigned 32bits value
+     * (the result is always modulo 32 bits even if we have
+     * prod_head > cons_tail). So 'free_entries' is always between 0
+     * and size(ring)-1. */
+    free_entries = mask + cons_tail - prod_head;
+
+    /* Move prod_head atomically. */
+
+    /* Write payload to ring buffer. */
+
+    /* Update prod_tail */
+}
+
 typedef struct {
     struct virtq_desc vq_desc;
     struct queue_head q;
@@ -790,7 +821,9 @@ static int virtio_snd_tx_desc_handler(virtio_snd_state_t *vsnd,
             goto early_continue;
         }
 
-        /* TODO: ring buffer implementation here */
+        /* TODO: ring buffer copy here */
+        void *payload = (void *) (base + addr);
+        __virtio_snd_frame_enqueue(payload, len, stream_id);
         ret_len += len;
 
     early_continue:
