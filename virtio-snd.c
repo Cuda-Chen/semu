@@ -623,7 +623,7 @@ static void __virtio_snd_frame_dequeue(void *out,
 
     /* Copy the frame to output stream */
     uint32_t size = props->ring.cons.size;
-    uint32_t idx = cons_head & mask;
+    uint32_t idx = cons_head % size;
     fprintf(stderr,
             "cons_head %" PRIu32 " cons_next %" PRIu32 " mask %" PRIu32
             " idx %" PRIu32 "\n",
@@ -810,7 +810,7 @@ static void __virtio_snd_frame_enqueue(void *payload,
 
     /* Write payload to ring buffer. */
     uint32_t size = props->ring.prod.size;
-    uint32_t idx = prod_head & mask;
+    uint32_t idx = prod_head % size;
     fprintf(stderr,
             "prod_head %" PRIu32 " prod_next %" PRIu32 " mask %" PRIu32
             " idx %" PRIu32 "\n",
