@@ -107,7 +107,7 @@ portaudio/Makefile:
 $(PORTAUDIOLIB): portaudio/Makefile
 	@cd $(dir $<) && ./configure
 	@cd $(dir $<) && $(MAKE)
-$(OBJS): $(PORTAUDIOLIB)
+main.o: $(PORTAUDIOLIB)
 
 # suppress warning when compiling PortAudio
 virtio-snd.o: CFLAGS += -Wno-unused-parameter
