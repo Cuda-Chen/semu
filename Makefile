@@ -99,8 +99,8 @@ ifeq ($(call has, VIRTIOSND), 1)
 portaudio/Makefile:
 	git submodule update --init portaudio
 $(PORTAUDIOLIB): portaudio/Makefile
-	$(MAKE) -C $(dir $<) && ./configure
-	$(MAKE) -C $(dir $<) && $(MAKE)
+	$(MAKE) -C $(dir $<) ./configure
+	$(MAKE) -C $(dir $<) $(MAKE)
 main.o: $(PORTAUDIOLIB)
 
 # suppress warning when compiling PortAudio
