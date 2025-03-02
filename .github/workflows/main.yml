@@ -11,6 +11,7 @@ jobs:
       run: |
             sudo apt-get install build-essential device-tree-compiler expect
             sudo apt-get install libasound2-dev libudev-dev
+            sudo apt-get install automake
     - name: default build
       run: make
       shell: bash
