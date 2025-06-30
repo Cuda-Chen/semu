@@ -5,9 +5,10 @@ on: [push, pull_request]
 jobs:
   semu-linux:
     runs-on: ubuntu-24.04
-    matrix:
-      dependency:
-        - libpulse-dev
+    strategy:
+      matrix:
+        dependency:
+          - libpulse-dev
     steps:
     - uses: actions/checkout@v4
     - name: install-dependencies
