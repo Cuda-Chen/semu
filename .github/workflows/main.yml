@@ -10,7 +10,8 @@ jobs:
         dependency:
           - libpulse-dev
     steps:
-    - uses: actions/checkout@v4
+    - name: checkout code
+      uses: actions/checkout@v4
     - name: install-dependencies
       run: |
             sudo apt-get install build-essential device-tree-compiler expect
