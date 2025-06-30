@@ -5,12 +5,16 @@ on: [push, pull_request]
 jobs:
   semu-linux:
     runs-on: ubuntu-24.04
+    matrix:
+      dependency:
+        - libpulse-dev
     steps:
     - uses: actions/checkout@v4
     - name: install-dependencies
       run: |
             sudo apt-get install build-essential device-tree-compiler expect
             sudo apt-get install libasound2-dev libudev-dev
+    - name: install sound multiplexer ${{ matrix.dependency }}
     - name: default build
       run: make
       shell: bash
