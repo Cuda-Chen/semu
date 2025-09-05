@@ -304,15 +304,18 @@ typedef struct {
     vsnd_stream_sel_t v;
 } virtio_snd_prop_t;
 
+#define VIRTIO_SND_JACK_DEFAULT_CONFIG \
+            .hdr.hda_fn_nid = 0, \
+            .features = 0, \
+            .hda_reg_defconf = 0, \
+            .hda_reg_caps = 0, \
+            .connected = 1,
+
 static virtio_snd_config_t vsnd_configs[VSND_DEV_CNT_MAX];
 static virtio_snd_prop_t vsnd_props[VSND_DEV_CNT_MAX] = {
     [0].j =
         {
-            .hdr.hda_fn_nid = 0,
-            .features = 0,
-            .hda_reg_defconf = 0,
-            .hda_reg_caps = 0,
-            .connected = 1,
+            VIRTIO_SND_JACK_DEFAULT_CONFIG
         },
     [0].p =
         {
@@ -555,32 +558,6 @@ static void virtio_snd_read_pcm_info_handler(
 {
     uint32_t cnt = query->count;
     for (uint32_t i = 0; i < cnt; i++) {
-#if 0
-        info[i].hdr.hda_fn_nid = 0;
-        info[i].features = 0;
-        info[i].formats = (1 << VIRTIO_SND_PCM_FMT_S16);
-
-        info[i].rates = 0;
-#define _(rate) info[i].rates |= (1 << VIRTIO_SND_PCM_RATE_##rate);
-        SND_PCM_RATE
-#undef _
-        info[i].direction = VIRTIO_SND_D_OUTPUT;
-        info[i].channels_min = 1;
-        info[i].channels_max = 1;
-        memset(&info[i].padding, 0, sizeof(info[i].padding));
-
-        virtio_snd_prop_t *props = &vsnd_props[i];
-        props->p.hdr.hda_fn_nid = 0;
-        props->p.features = 0;
-        props->p.formats = (1 << VIRTIO_SND_PCM_FMT_S16);
-#define _(rate) props->p.rates |= (1 << VIRTIO_SND_PCM_RATE_##rate);
-        SND_PCM_RATE
-#undef _
-        props->p.direction = VIRTIO_SND_D_OUTPUT;
-        props->p.channels_min = 1;
-        props->p.channels_max = 1;
-        memset(&props->p.padding, 0, sizeof(props->p.padding));
-#endif
         virtio_snd_prop_t *props = &vsnd_props[i];
         info[i].hdr.hda_fn_nid = props->p.hdr.hda_fn_nid;
         info[i].features = props->p.features;
