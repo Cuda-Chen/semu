@@ -13,7 +13,7 @@
 #include "utils.h"
 #include "virtio.h"
 
-#define VSND_DEV_CNT_MAX 1
+#define VSND_DEV_CNT_MAX 2
 
 #define VSND_QUEUE_NUM_MAX 1024
 #define vsndq (vsnd->queues[vsnd->QueueSel])
@@ -304,8 +304,52 @@ typedef struct {
     vsnd_stream_sel_t v;
 } virtio_snd_prop_t;
 
+#define VIRTIO_SND_JACK_DEFAULT_CONFIG                        \
+    .hdr.hda_fn_nid = 0, .features = 0, .hda_reg_defconf = 0, \
+    .hda_reg_caps = 0, .connected = 1,
+
 static virtio_snd_config_t vsnd_configs[VSND_DEV_CNT_MAX];
 static virtio_snd_prop_t vsnd_props[VSND_DEV_CNT_MAX] = {
+    [0].j = {VIRTIO_SND_JACK_DEFAULT_CONFIG},
+    [1].j = {VIRTIO_SND_JACK_DEFAULT_CONFIG},
+    [0].p =
+        {
+            .hdr.hda_fn_nid = 0,
+            .features = 0,
+            .formats = (1 << VIRTIO_SND_PCM_FMT_S16),
+#define _(rate) (1 << VIRTIO_SND_PCM_RATE_##rate) |
+            .rates = (SND_PCM_RATE 0),
+#undef _
+            .direction = VIRTIO_SND_D_OUTPUT,
+            .channels_min = 1,
+            .channels_max = 1,
+        },
+    [1].p =
+        {
+            .hdr.hda_fn_nid = 0,
+            .features = 0,
+            .formats = (1 << VIRTIO_SND_PCM_FMT_S16),
+#define _(rate) (1 << VIRTIO_SND_PCM_RATE_##rate) |
+            .rates = (SND_PCM_RATE 0),
+#undef _
+            .direction = VIRTIO_SND_D_INPUT,
+            .channels_min = 1,
+            .channels_max = 1,
+        },
+    [0].c =
+        {
+            .hdr.hda_fn_nid = 0,
+            .direction = VIRTIO_SND_D_OUTPUT,
+            .channels = 1,
+            .positions[0] = VIRTIO_SND_CHMAP_MONO,
+        },
+    [1].c =
+        {
+            .hdr.hda_fn_nid = 0,
+            .direction = VIRTIO_SND_D_INPUT,
+            .channels = 1,
+            .positions[0] = VIRTIO_SND_CHMAP_MONO,
+        },
     [0 ... VSND_DEV_CNT_MAX - 1].pp.hdr.hdr.code = VIRTIO_SND_R_PCM_SET_PARAMS,
     [0 ... VSND_DEV_CNT_MAX - 1].lock =
         {
@@ -316,9 +360,12 @@ static virtio_snd_prop_t vsnd_props[VSND_DEV_CNT_MAX] = {
 };
 static int vsnd_dev_cnt = 0;
 
-static pthread_mutex_t virtio_snd_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t virtio_snd_tx_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t virtio_snd_rx_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t virtio_snd_tx_cond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t virtio_snd_rx_cond = PTHREAD_COND_INITIALIZER;
 static int tx_ev_notify;
+static int rx_ev_notify;
 
 /* vsnd virtq callback type */
 typedef int (*vsnd_virtq_cb)(virtio_snd_state_t *,       /* vsnd state */
@@ -327,7 +374,13 @@ typedef int (*vsnd_virtq_cb)(virtio_snd_state_t *,       /* vsnd state */
                              uint32_t * /* response length */);
 
 /* Forward declaration */
-static int virtio_snd_stream_cb(const void *input,
+static int virtio_snd_tx_stream_cb(const void *input,
+                                void *output,
+                                unsigned long frame_cnt,
+                                const PaStreamCallbackTimeInfo *time_info,
+                                PaStreamCallbackFlags status_flags,
+                                void *user_data);
+static int virtio_snd_rx_stream_cb(const void *input,
                                 void *output,
                                 unsigned long frame_cnt,
                                 const PaStreamCallbackTimeInfo *time_info,
@@ -461,6 +514,14 @@ static uint32_t flush_stream_id = 0;
 
 VSND_GEN_TX_QUEUE_HANDLER(normal, 1);
 VSND_GEN_TX_QUEUE_HANDLER(flush, 0);
+static int virtio_snd_rx_desc_normal_handler(virtio_snd_state_t *vsnd,
+                                             const virtio_snd_queue_t *queue,
+                                             uint32_t desc_idx,
+                                             uint32_t *plen)
+{
+    fprintf(stderr, "=== rx_desc_normal_handler ===\n");
+    return 0;
+}
 
 static void virtio_snd_set_fail(virtio_snd_state_t *vsnd)
 {
@@ -508,19 +569,13 @@ static void virtio_snd_read_jack_info_handler(
 {
     uint32_t cnt = query->count;
     for (uint32_t i = 0; i < cnt; i++) {
-        info[i].hdr.hda_fn_nid = 0;
-        info[i].features = 0;
-        info[i].hda_reg_defconf = 0;
-        info[i].hda_reg_caps = 0;
-        info[i].connected = 1;
-        memset(&info[i].padding, 0, sizeof(info[i].padding));
-
         virtio_snd_prop_t *props = &vsnd_props[i];
-        props->j.hdr.hda_fn_nid = 0;
-        props->j.features = 0;
-        props->j.hda_reg_defconf = 0;
-        props->j.hda_reg_caps = 0;
-        props->j.connected = 1;
+        info[i].hdr.hda_fn_nid = props->j.hdr.hda_fn_nid;
+        info[i].features = props->j.features;
+        info[i].hda_reg_defconf = props->j.hda_reg_defconf;
+        info[i].hda_reg_caps = props->j.hda_reg_caps;
+        info[i].connected = props->j.connected;
+        memset(&info[i].padding, 0, sizeof(info[i].padding));
         memset(&props->j.padding, 0, sizeof(props->j.padding));
     }
 
@@ -534,29 +589,15 @@ static void virtio_snd_read_pcm_info_handler(
 {
     uint32_t cnt = query->count;
     for (uint32_t i = 0; i < cnt; i++) {
-        info[i].hdr.hda_fn_nid = 0;
-        info[i].features = 0;
-        info[i].formats = (1 << VIRTIO_SND_PCM_FMT_S16);
-
-        info[i].rates = 0;
-#define _(rate) info[i].rates |= (1 << VIRTIO_SND_PCM_RATE_##rate);
-        SND_PCM_RATE
-#undef _
-        info[i].direction = VIRTIO_SND_D_OUTPUT;
-        info[i].channels_min = 1;
-        info[i].channels_max = 1;
-        memset(&info[i].padding, 0, sizeof(info[i].padding));
-
         virtio_snd_prop_t *props = &vsnd_props[i];
-        props->p.hdr.hda_fn_nid = 0;
-        props->p.features = 0;
-        props->p.formats = (1 << VIRTIO_SND_PCM_FMT_S16);
-#define _(rate) props->p.rates |= (1 << VIRTIO_SND_PCM_RATE_##rate);
-        SND_PCM_RATE
-#undef _
-        props->p.direction = VIRTIO_SND_D_OUTPUT;
-        props->p.channels_min = 1;
-        props->p.channels_max = 1;
+        info[i].hdr.hda_fn_nid = props->p.hdr.hda_fn_nid;
+        info[i].features = props->p.features;
+        info[i].formats = props->p.formats;
+        info[i].rates = props->p.rates;
+        info[i].direction = props->p.direction;
+        info[i].channels_min = props->p.channels_min;
+        info[i].channels_max = props->p.channels_max;
+        memset(&info[i].padding, 0, sizeof(info[i].padding));
         memset(&props->p.padding, 0, sizeof(props->p.padding));
     }
     *plen = cnt * sizeof(*info);
@@ -569,16 +610,11 @@ static void virtio_snd_read_chmap_info_handler(
 {
     uint32_t cnt = query->count;
     for (uint32_t i = 0; i < cnt; i++) {
-        info[i].hdr.hda_fn_nid = 0;
-        info[i].direction = VIRTIO_SND_D_OUTPUT;
-        info[i].channels = 1;
-        info[i].positions[0] = VIRTIO_SND_CHMAP_MONO;
-
         virtio_snd_prop_t *props = &vsnd_props[i];
-        props->c.hdr.hda_fn_nid = 0;
-        props->c.direction = VIRTIO_SND_D_OUTPUT;
-        props->c.channels = 1;
-        props->c.positions[0] = VIRTIO_SND_CHMAP_MONO;
+        info[i].hdr.hda_fn_nid = props->c.hdr.hda_fn_nid;
+        info[i].direction = props->c.direction;
+        info[i].channels = props->c.channels;
+        info[i].positions[0] = props->c.positions[0];
     }
     *plen = cnt * sizeof(info);
 }
@@ -661,9 +697,18 @@ static void virtio_snd_read_pcm_prepare(const virtio_snd_pcm_hdr_t *query,
         .suggestedLatency = 0.1, /* 100 ms */
         .hostApiSpecificStreamInfo = NULL,
     };
-    PaError err = Pa_OpenStream(&props->pa_stream, NULL, /* no input */
-                                &params, rate, cnfa_period_frames, paClipOff,
-                                virtio_snd_stream_cb, &props->v);
+    uint32_t dir = props->p.direction;
+    PaError err = paNoError;
+    if (dir == VIRTIO_SND_D_OUTPUT)
+        err = Pa_OpenStream(&props->pa_stream, NULL, /* no input */
+                            &params, rate, cnfa_period_frames, paClipOff,
+                            virtio_snd_tx_stream_cb, &props->v);
+    else if (dir == VIRTIO_SND_D_INPUT) {
+        fprintf(stderr, "pcm_prepare input\n");
+        err = Pa_OpenStream(&props->pa_stream, &params, NULL /* no output */,
+                            rate, cnfa_period_frames, paClipOff,
+                            virtio_snd_rx_stream_cb, &props->v);
+    }
     if (err != paNoError) {
         fprintf(stderr, "Cannot create PortAudio\n");
         printf("PortAudio error: %s\n", Pa_GetErrorText(err));
@@ -819,7 +864,7 @@ static void __virtio_snd_frame_dequeue(void *out,
     pthread_mutex_unlock(&props->lock.lock);
 }
 
-static int virtio_snd_stream_cb(const void *input,
+static int virtio_snd_tx_stream_cb(const void *input,
                                 void *output,
                                 unsigned long frame_cnt,
                                 const PaStreamCallbackTimeInfo *time_info,
@@ -832,6 +877,23 @@ static int virtio_snd_stream_cb(const void *input,
     uint32_t out_buf_sz = frame_cnt * channels;
     uint32_t out_buf_bytes = out_buf_sz * VSND_CNFA_FRAME_SZ;
     __virtio_snd_frame_dequeue(output, out_buf_bytes, id);
+
+    return paContinue;
+}
+
+static int virtio_snd_rx_stream_cb(const void *input,
+                                void *output,
+                                unsigned long frame_cnt,
+                                const PaStreamCallbackTimeInfo *time_info,
+                                PaStreamCallbackFlags status_flags,
+                                void *user_data)
+{
+    vsnd_stream_sel_t *v_ptr = (vsnd_stream_sel_t *) user_data;
+    uint32_t id = v_ptr->stream_id;
+    int channels = vsnd_props[id].pp.channels;
+    uint32_t out_buf_sz = frame_cnt * channels;
+    uint32_t out_buf_bytes = out_buf_sz * VSND_CNFA_FRAME_SZ;
+    __virtio_snd_frame_enqueue(output, out_buf_bytes, id);
 
     return paContinue;
 }
@@ -1020,18 +1082,36 @@ static void virtio_queue_notify_handler(
 
 /* TX thread context */
 /* Receive PCM frames from driver. */
-static void *func(void *args)
+static void *tx_func(void *args)
 {
     virtio_snd_state_t *vsnd = (virtio_snd_state_t *) args;
     for (;;) {
-        pthread_mutex_lock(&virtio_snd_mutex);
+        pthread_mutex_lock(&virtio_snd_tx_mutex);
         while (tx_ev_notify <= 0)
-            pthread_cond_wait(&virtio_snd_tx_cond, &virtio_snd_mutex);
+            pthread_cond_wait(&virtio_snd_tx_cond, &virtio_snd_tx_mutex);
 
         tx_ev_notify--;
         virtio_queue_notify_handler(vsnd, 2, virtio_snd_tx_desc_normal_handler);
 
-        pthread_mutex_unlock(&virtio_snd_mutex);
+        pthread_mutex_unlock(&virtio_snd_tx_mutex);
+    }
+    pthread_exit(NULL);
+}
+
+/* RX thread context */
+/* Send PCM frames to driver. */
+static void *rx_func(void *args)
+{
+    virtio_snd_state_t *vsnd = (virtio_snd_state_t *) args;
+    for (;;) {
+        pthread_mutex_lock(&virtio_snd_rx_mutex);
+        while (rx_ev_notify <= 0)
+            pthread_cond_wait(&virtio_snd_rx_cond, &virtio_snd_rx_mutex);
+
+        rx_ev_notify--;
+        virtio_queue_notify_handler(vsnd, 2, virtio_snd_rx_desc_normal_handler);
+
+        pthread_mutex_unlock(&virtio_snd_rx_mutex);
     }
     pthread_exit(NULL);
 }
@@ -1150,6 +1230,11 @@ static bool virtio_snd_reg_write(virtio_snd_state_t *vsnd,
                 tx_ev_notify++;
                 pthread_cond_signal(&virtio_snd_tx_cond);
                 break;
+            case VSND_QUEUE_RX:
+                rx_ev_notify++;
+                pthread_cond_signal(&virtio_snd_rx_cond);
+                fprintf(stderr, "RX under construction\n");
+                break;
             default:
                 fprintf(stderr, "value %d not supported\n", value);
                 return false;
@@ -1232,18 +1317,24 @@ bool virtio_snd_init(virtio_snd_state_t *vsnd)
     }
 
     /* Allocate the memory of private member. */
-    vsnd->priv = &vsnd_configs[vsnd_dev_cnt++];
+    vsnd->priv = &vsnd_configs[vsnd_dev_cnt];
+    vsnd_dev_cnt += 2;
 
-    PRIV(vsnd)->jacks = 1;
-    PRIV(vsnd)->streams = 1;
-    PRIV(vsnd)->chmaps = 1;
+    PRIV(vsnd)->jacks = 2;
+    PRIV(vsnd)->streams = 2;
+    PRIV(vsnd)->chmaps = 2;
     PRIV(vsnd)->controls =
         0; /* virtio-snd device does not support control elements */
 
     tx_ev_notify = 0;
-    pthread_t tid;
-    if (pthread_create(&tid, NULL, func, vsnd) != 0) {
+    rx_ev_notify = 0;
+    pthread_t tx_tid, rx_tid;
+    if (pthread_create(&tx_tid, NULL, tx_func, vsnd) != 0) {
         fprintf(stderr, "cannot create TX thread\n");
+        return false;
+    }
+    if (pthread_create(&rx_tid, NULL, rx_func, vsnd) != 0) {
+        fprintf(stderr, "cannot create RX thread\n");
         return false;
     }
     /* Initialize PortAudio */
