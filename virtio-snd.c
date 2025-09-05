@@ -306,6 +306,33 @@ typedef struct {
 
 static virtio_snd_config_t vsnd_configs[VSND_DEV_CNT_MAX];
 static virtio_snd_prop_t vsnd_props[VSND_DEV_CNT_MAX] = {
+    [0].j =
+        {
+            .hdr.hda_fn_nid = 0,
+            .features = 0,
+            .hda_reg_defconf = 0,
+            .hda_reg_caps = 0,
+            .connected = 1,
+        },
+    [0].p =
+        {
+            .hdr.hda_fn_nid = 0,
+            .features = 0,
+            .formats = (1 << VIRTIO_SND_PCM_FMT_S16),
+#define _(rate) (1 << VIRTIO_SND_PCM_RATE_##rate) |
+            .rates = (SND_PCM_RATE 0),
+#undef _
+            .direction = VIRTIO_SND_D_OUTPUT,
+            .channels_min = 1,
+            .channels_max = 1,
+        },
+    [0].c =
+        {
+            .hdr.hda_fn_nid = 0,
+            .direction = VIRTIO_SND_D_OUTPUT,
+            .channels = 1,
+            .positions[0] = VIRTIO_SND_CHMAP_MONO,
+        },
     [0 ... VSND_DEV_CNT_MAX - 1].pp.hdr.hdr.code = VIRTIO_SND_R_PCM_SET_PARAMS,
     [0 ... VSND_DEV_CNT_MAX - 1].lock =
         {
@@ -508,19 +535,13 @@ static void virtio_snd_read_jack_info_handler(
 {
     uint32_t cnt = query->count;
     for (uint32_t i = 0; i < cnt; i++) {
-        info[i].hdr.hda_fn_nid = 0;
-        info[i].features = 0;
-        info[i].hda_reg_defconf = 0;
-        info[i].hda_reg_caps = 0;
-        info[i].connected = 1;
-        memset(&info[i].padding, 0, sizeof(info[i].padding));
-
         virtio_snd_prop_t *props = &vsnd_props[i];
-        props->j.hdr.hda_fn_nid = 0;
-        props->j.features = 0;
-        props->j.hda_reg_defconf = 0;
-        props->j.hda_reg_caps = 0;
-        props->j.connected = 1;
+        info[i].hdr.hda_fn_nid = props->j.hdr.hda_fn_nid;
+        info[i].features = props->j.features;
+        info[i].hda_reg_defconf = props->j.hda_reg_defconf;
+        info[i].hda_reg_caps = props->j.hda_reg_caps;
+        info[i].connected = props->j.connected;
+        memset(&info[i].padding, 0, sizeof(info[i].padding));
         memset(&props->j.padding, 0, sizeof(props->j.padding));
     }
 
@@ -534,6 +555,7 @@ static void virtio_snd_read_pcm_info_handler(
 {
     uint32_t cnt = query->count;
     for (uint32_t i = 0; i < cnt; i++) {
+#if 0
         info[i].hdr.hda_fn_nid = 0;
         info[i].features = 0;
         info[i].formats = (1 << VIRTIO_SND_PCM_FMT_S16);
@@ -558,6 +580,17 @@ static void virtio_snd_read_pcm_info_handler(
         props->p.channels_min = 1;
         props->p.channels_max = 1;
         memset(&props->p.padding, 0, sizeof(props->p.padding));
+#endif
+        virtio_snd_prop_t *props = &vsnd_props[i];
+        info[i].hdr.hda_fn_nid = props->p.hdr.hda_fn_nid;
+        info[i].features = props->p.features;
+        info[i].formats = props->p.formats;
+        info[i].rates = props->p.rates;
+        info[i].direction = props->p.direction;
+        info[i].channels_min = props->p.channels_min;
+        info[i].channels_max = props->p.channels_max;
+        memset(&info[i].padding, 0, sizeof(info[i].padding));
+        memset(&props->p.padding, 0, sizeof(props->p.padding));
     }
     *plen = cnt * sizeof(*info);
 }
@@ -569,16 +602,11 @@ static void virtio_snd_read_chmap_info_handler(
 {
     uint32_t cnt = query->count;
     for (uint32_t i = 0; i < cnt; i++) {
-        info[i].hdr.hda_fn_nid = 0;
-        info[i].direction = VIRTIO_SND_D_OUTPUT;
-        info[i].channels = 1;
-        info[i].positions[0] = VIRTIO_SND_CHMAP_MONO;
-
         virtio_snd_prop_t *props = &vsnd_props[i];
-        props->c.hdr.hda_fn_nid = 0;
-        props->c.direction = VIRTIO_SND_D_OUTPUT;
-        props->c.channels = 1;
-        props->c.positions[0] = VIRTIO_SND_CHMAP_MONO;
+        info[i].hdr.hda_fn_nid = props->c.hdr.hda_fn_nid;
+        info[i].direction = props->c.direction;
+        info[i].channels = props->c.channels;
+        info[i].positions[0] = props->c.positions[0];
     }
     *plen = cnt * sizeof(info);
 }
