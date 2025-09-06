@@ -13,7 +13,7 @@
 #include "utils.h"
 #include "virtio.h"
 
-#define VSND_DEV_CNT_MAX 1
+#define VSND_DEV_CNT_MAX 2
 
 #define VSND_QUEUE_NUM_MAX 1024
 #define vsndq (vsnd->queues[vsnd->QueueSel])
@@ -304,19 +304,14 @@ typedef struct {
     vsnd_stream_sel_t v;
 } virtio_snd_prop_t;
 
-#define VIRTIO_SND_JACK_DEFAULT_CONFIG \
-            .hdr.hda_fn_nid = 0, \
-            .features = 0, \
-            .hda_reg_defconf = 0, \
-            .hda_reg_caps = 0, \
-            .connected = 1,
+#define VIRTIO_SND_JACK_DEFAULT_CONFIG                        \
+    .hdr.hda_fn_nid = 0, .features = 0, .hda_reg_defconf = 0, \
+    .hda_reg_caps = 0, .connected = 1,
 
 static virtio_snd_config_t vsnd_configs[VSND_DEV_CNT_MAX];
 static virtio_snd_prop_t vsnd_props[VSND_DEV_CNT_MAX] = {
-    [0].j =
-        {
-            VIRTIO_SND_JACK_DEFAULT_CONFIG
-        },
+    [0].j = {VIRTIO_SND_JACK_DEFAULT_CONFIG},
+    [1].j = {VIRTIO_SND_JACK_DEFAULT_CONFIG},
     [0].p =
         {
             .hdr.hda_fn_nid = 0,
@@ -329,10 +324,29 @@ static virtio_snd_prop_t vsnd_props[VSND_DEV_CNT_MAX] = {
             .channels_min = 1,
             .channels_max = 1,
         },
+    [1].p =
+        {
+            .hdr.hda_fn_nid = 0,
+            .features = 0,
+            .formats = (1 << VIRTIO_SND_PCM_FMT_S16),
+#define _(rate) (1 << VIRTIO_SND_PCM_RATE_##rate) |
+            .rates = (SND_PCM_RATE 0),
+#undef _
+            .direction = VIRTIO_SND_D_INPUT,
+            .channels_min = 1,
+            .channels_max = 1,
+        },
     [0].c =
         {
             .hdr.hda_fn_nid = 0,
             .direction = VIRTIO_SND_D_OUTPUT,
+            .channels = 1,
+            .positions[0] = VIRTIO_SND_CHMAP_MONO,
+        },
+    [1].c =
+        {
+            .hdr.hda_fn_nid = 0,
+            .direction = VIRTIO_SND_D_INPUT,
             .channels = 1,
             .positions[0] = VIRTIO_SND_CHMAP_MONO,
         },
@@ -1237,11 +1251,12 @@ bool virtio_snd_init(virtio_snd_state_t *vsnd)
     }
 
     /* Allocate the memory of private member. */
-    vsnd->priv = &vsnd_configs[vsnd_dev_cnt++];
+    vsnd->priv = &vsnd_configs[vsnd_dev_cnt];
+    vsnd_dev_cnt += 2;
 
-    PRIV(vsnd)->jacks = 1;
-    PRIV(vsnd)->streams = 1;
-    PRIV(vsnd)->chmaps = 1;
+    PRIV(vsnd)->jacks = 2;
+    PRIV(vsnd)->streams = 2;
+    PRIV(vsnd)->chmaps = 2;
     PRIV(vsnd)->controls =
         0; /* virtio-snd device does not support control elements */
 
