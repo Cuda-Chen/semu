@@ -53,14 +53,31 @@ endif
 NETDEV ?= tap
 # virtio-net
 ENABLE_VIRTIONET ?= 1
-ifneq ($(UNAME_S),Linux)
+ifeq ($(UNAME_S),Darwin)
+    # macOS: auto-select backend when using default TAP setting
+    ifeq ($(NETDEV),tap)
+        NETDEV :=
+    endif
+else ifneq ($(UNAME_S),Linux)
+    # Other platforms: disable virtio-net
     ENABLE_VIRTIONET := 0
 endif
+
 $(call set-feature, VIRTIONET)
 ifeq ($(call has, VIRTIONET), 1)
     OBJS_EXTRA += virtio-net.o
     OBJS_EXTRA += netdev.o
-	OBJS_EXTRA += slirp.o
+
+    ifeq ($(UNAME_S),Darwin)
+        # macOS: support both vmnet and user (slirp) backends
+        OBJS_EXTRA += netdev-vmnet.o
+        OBJS_EXTRA += slirp.o
+        CFLAGS += -fblocks
+        LDFLAGS += -framework vmnet
+    else
+        # Linux: use tap/slirp backends
+        OBJS_EXTRA += slirp.o
+    endif
 endif
 
 # virtio-snd
@@ -152,6 +169,7 @@ OBJS := \
 	uart.o \
 	main.o \
 	aclint.o \
+	coro.o \
 	$(OBJS_EXTRA)
 
 deps := $(OBJS:%.o=.%.o.d)
@@ -168,10 +186,16 @@ ifeq ($(call has, VIRTIONET), 1)
 MINISLIRP_DIR := minislirp
 MINISLIRP_LIB := minislirp/src/libslirp.a
 LDFLAGS += $(MINISLIRP_LIB)
+# macOS: workaround for swab redefinition and add resolv library
+MINISLIRP_CFLAGS :=
+ifeq ($(UNAME_S),Darwin)
+    MINISLIRP_CFLAGS := MYCFLAGS="-D_DARWIN_C_SOURCE"
+    LDFLAGS += -lresolv
+endif
 $(MINISLIRP_DIR)/src/Makefile:
 	git submodule update --init $(MINISLIRP_DIR)
 $(MINISLIRP_LIB): $(MINISLIRP_DIR)/src/Makefile
-	$(MAKE) -C $(dir $<)
+	$(MAKE) -C $(dir $<) $(MINISLIRP_CFLAGS)
 $(OBJS): $(MINISLIRP_LIB)
 endif
 
@@ -205,16 +229,28 @@ S := $E $E
 CFLAGS += -D SEMU_BOOT_TARGET_TIME=10
 
 SMP ?= 1
+
+# Track SMP value changes to force DTB regeneration
+.smp_stamp: FORCE
+	@if [ ! -f .smp_stamp ] || [ "$$(cat .smp_stamp 2>/dev/null)" != "$(SMP)" ]; then \
+	    echo "$(SMP)" > .smp_stamp; \
+	    rm -f riscv-harts.dtsi minimal.dtb; \
+	fi
+
 .PHONY: riscv-harts.dtsi
-riscv-harts.dtsi:
+riscv-harts.dtsi: .smp_stamp
 	$(Q)python3 scripts/gen-hart-dts.py $@ $(SMP) $(CLOCK_FREQ)
 
 minimal.dtb: minimal.dts riscv-harts.dtsi
 	$(VECHO) " DTC\t$@\n"
+	$(Q)$(RM) $@
 	$(Q)$(CC) -nostdinc -E -P -x assembler-with-cpp -undef \
 	    $(DT_CFLAGS) \
 	    $(subst ^,$S,$(filter -D^SEMU_FEATURE_%, $(subst -D$(S)SEMU_FEATURE,-D^SEMU_FEATURE,$(CFLAGS)))) $< \
 	    | $(DTC) - > $@
+
+.PHONY: FORCE
+FORCE:
 
 # Rules for downloading prebuilt Linux kernel image
 include mk/external.mk
@@ -232,7 +268,7 @@ $(SHARED_DIRECTORY):
 
 check: $(BIN) minimal.dtb $(KERNEL_DATA) $(INITRD_DATA) $(DISKIMG_FILE) $(SHARED_DIRECTORY)
 	@$(call notice, Ready to launch Linux kernel. Please be patient.)
-	$(Q)./$(BIN) -k $(KERNEL_DATA) -c $(SMP) -b minimal.dtb -i $(INITRD_DATA) -n $(NETDEV) $(OPTS)
+	$(Q)./$(BIN) -k $(KERNEL_DATA) -c $(SMP) -b minimal.dtb -i $(INITRD_DATA) $(if $(NETDEV),-n $(NETDEV)) $(OPTS)
 
 build-image:
 	scripts/build-image.sh
@@ -240,11 +276,14 @@ build-image:
 clean:
 	$(Q)$(RM) $(BIN) $(OBJS) $(deps)
 	$(Q)$(MAKE) -C mini-gdbstub clean
-	$(Q)$(MAKE) -C minislirp/src clean
+	$(Q)if [ -n "$(MINISLIRP_DIR)" ] && [ -d "$(MINISLIRP_DIR)/src" ]; then \
+		$(MAKE) -C $(MINISLIRP_DIR)/src clean; \
+	fi
 
 distclean: clean
 	$(Q)$(RM) riscv-harts.dtsi
 	$(Q)$(RM) minimal.dtb
+	$(Q)$(RM) .smp_stamp
 	$(Q)$(RM) Image rootfs.cpio
 	$(Q)$(RM) ext4.img
 
