@@ -520,6 +520,11 @@ static int virtio_snd_rx_desc_normal_handler(virtio_snd_state_t *vsnd,
                                              uint32_t *plen)
 {
     fprintf(stderr, "=== rx_desc_normal_handler ===\n");
+
+    /* check for new buffers */
+    /* process them */
+    /* consume from available queue, write to used queue */
+    /* send interrupt, unless VIRTQ_AVAIL_F_NO_INTERRUPT is set */
     return 0;
 }
 
@@ -1109,7 +1114,7 @@ static void *rx_func(void *args)
             pthread_cond_wait(&virtio_snd_rx_cond, &virtio_snd_rx_mutex);
 
         rx_ev_notify--;
-        virtio_queue_notify_handler(vsnd, 2, virtio_snd_rx_desc_normal_handler);
+        virtio_queue_notify_handler(vsnd, 3, virtio_snd_rx_desc_normal_handler);
 
         pthread_mutex_unlock(&virtio_snd_rx_mutex);
     }
