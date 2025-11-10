@@ -898,7 +898,8 @@ static int virtio_snd_rx_stream_cb(const void *input,
     int channels = vsnd_props[id].pp.channels;
     uint32_t out_buf_sz = frame_cnt * channels;
     uint32_t out_buf_bytes = out_buf_sz * VSND_CNFA_FRAME_SZ;
-    __virtio_snd_frame_enqueue(output, out_buf_bytes, id);
+    //__virtio_snd_frame_enqueue(output, out_buf_bytes, id);
+    fprintf(stderr, "+++ virtio_snd_rx_stream_cb +++\n");
 
     return paContinue;
 }
