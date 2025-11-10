@@ -876,6 +876,11 @@ static int virtio_snd_tx_stream_cb(const void *input,
                                 PaStreamCallbackFlags status_flags,
                                 void *user_data)
 {
+    /* suppress unused variables warning */
+    (void) input;
+    (void) time_info;
+    (void) status_flags;
+
     vsnd_stream_sel_t *v_ptr = (vsnd_stream_sel_t *) user_data;
     uint32_t id = v_ptr->stream_id;
     int channels = vsnd_props[id].pp.channels;
