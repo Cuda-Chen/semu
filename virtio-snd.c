@@ -898,12 +898,20 @@ static int virtio_snd_rx_stream_cb(const void *input,
                                 PaStreamCallbackFlags status_flags,
                                 void *user_data)
 {
+    /* suppress unused variable warning */
+    (void) output;
+    (void) time_info;
+    (void) status_flags;
+
     vsnd_stream_sel_t *v_ptr = (vsnd_stream_sel_t *) user_data;
     uint32_t id = v_ptr->stream_id;
-    int channels = vsnd_props[id].pp.channels;
+    virtio_snd_prop_t *props = &vsnd_props[id];
+    int channels = props->pp.channels;
     uint32_t out_buf_sz = frame_cnt * channels;
     uint32_t out_buf_bytes = out_buf_sz * VSND_CNFA_FRAME_SZ;
+    uint32_t period_bytes = props->pp.period_bytes;  
     //__virtio_snd_frame_enqueue(output, out_buf_bytes, id);
+    memcpy(props->intermediate, input, period_bytes);
     fprintf(stderr, "+++ virtio_snd_rx_stream_cb +++\n");
 
     return paContinue;
@@ -1244,7 +1252,6 @@ static bool virtio_snd_reg_write(virtio_snd_state_t *vsnd,
             case VSND_QUEUE_RX:
                 rx_ev_notify++;
                 pthread_cond_signal(&virtio_snd_rx_cond);
-                fprintf(stderr, "RX under construction\n");
                 break;
             default:
                 fprintf(stderr, "value %d not supported\n", value);
