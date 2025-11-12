@@ -516,7 +516,7 @@ static uint32_t flush_stream_id = 0;
 
 VSND_GEN_TX_QUEUE_HANDLER(normal, 1);
 VSND_GEN_TX_QUEUE_HANDLER(flush, 0);
-#if 0
+#if 1
 #define VSND_GEN_RX_QUEUE_HANDLER(NAME_SUFFIX, WRITE)                        \
     static int virtio_snd_rx_desc_##NAME_SUFFIX##_handler(                   \
         virtio_snd_state_t *vsnd, const virtio_snd_queue_t *queue,           \
@@ -562,6 +562,7 @@ VSND_GEN_TX_QUEUE_HANDLER(flush, 0);
         uintptr_t base = (uintptr_t) vsnd->ram;                              \
         uint32_t ret_len = 0;                                                \
         uint8_t bad_msg_err = 0;                                             \
+        fprintf(stderr, "*** rx_normal cnt %d\n", cnt); \
         list_for_each_entry (node, &q, q) {                                  \
             uint32_t addr = node->vq_desc.addr;                              \
             uint32_t len = node->vq_desc.len;                                \
@@ -629,7 +630,7 @@ VSND_GEN_TX_QUEUE_HANDLER(flush, 0);
 
 VSND_GEN_RX_QUEUE_HANDLER(normal, 1);
 #endif
-#if 1
+#if 0
 static int virtio_snd_rx_desc_normal_handler(virtio_snd_state_t *vsnd,
                                              const virtio_snd_queue_t *queue,
                                              uint32_t desc_idx,
