@@ -297,8 +297,10 @@ typedef struct {
     // PCM frame doubly-ended queue
     vsnd_buf_queue_node_t buf;
     struct list_head buf_queue_head;
-    // PCM frame intermediate buffer;
+    // PCM frame intermediate buffer
     void *intermediate;
+    uint32_t buf_sz;
+    uint32_t buf_idx;
 
     // playback control
     vsnd_stream_sel_t v;
@@ -806,14 +808,15 @@ static void virtio_snd_read_pcm_prepare(const virtio_snd_pcm_hdr_t *query,
     uint32_t cnfa_period_bytes = bps_rate / 10;
     /* Calculate the period size (in frames) for CNFA . */
     uint32_t cnfa_period_frames = cnfa_period_bytes / VSND_CNFA_FRAME_SZ;
-    fprintf(stderr, "period_bytes %" PRIu32 " period_frames %" PRIu32 "\n",
-            cnfa_period_bytes, cnfa_period_frames);
-    /* Get the number of multiplier */
+    /* Get the number of buffer multiplier */
     uint32_t mul = props->pp.buffer_bytes / props->pp.period_bytes;
 
     INIT_LIST_HEAD(&props->buf_queue_head);
+    props->buf_sz = cnfa_period_bytes * mul;
+    props->buf_idx = 0;
+    uint32_t sz = sizeof(*props->intermediate) * props->buf_sz;
     props->intermediate =
-        (void *) malloc(sizeof(*props->intermediate) * cnfa_period_bytes * mul);
+        (void *) malloc(sz);
     PaStreamParameters params = {
         .device = Pa_GetDefaultOutputDevice(),
         .channelCount = props->pp.channels,
@@ -1027,10 +1030,22 @@ static int virtio_snd_rx_stream_cb(const void *input,
     int channels = props->pp.channels;
     uint32_t out_buf_sz = frame_cnt * channels;
     uint32_t out_buf_bytes = out_buf_sz * VSND_CNFA_FRAME_SZ;
-    fprintf(stderr, "out_buf_bytes %" PRIu32 "\n", out_buf_bytes); 
     //__virtio_snd_frame_enqueue(output, out_buf_bytes, id);
-    memcpy(props->intermediate, input, out_buf_bytes);
-    fprintf(stderr, "+++ virtio_snd_rx_stream_cb +++\n");
+    
+    uint32_t idx = props->buf_idx;
+    uint32_t sz = props->buf_sz;
+    uint32_t base = (idx + out_buf_bytes > sz) ? (sz - idx) : out_buf_bytes;
+    uint32_t left = out_buf_bytes - base;
+    memcpy(props->intermediate + idx, input, base);
+    if(left != 0)
+        memcpy(props->intermediate, input + base, left);
+
+    props->buf_idx = (props->buf_idx + out_buf_bytes) % sz;
+    fprintf(stderr, "+++ virtio_snd_rx_stream_cb"
+            " idx %" PRIu32
+            " base %" PRIu32 
+            " left %" PRIu32 " +++\n",
+            idx, base, left);
 
     return paContinue;
 }
