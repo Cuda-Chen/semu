@@ -808,10 +808,12 @@ static void virtio_snd_read_pcm_prepare(const virtio_snd_pcm_hdr_t *query,
     uint32_t cnfa_period_frames = cnfa_period_bytes / VSND_CNFA_FRAME_SZ;
     fprintf(stderr, "period_bytes %" PRIu32 " period_frames %" PRIu32 "\n",
             cnfa_period_bytes, cnfa_period_frames);
+    /* Get the number of multiplier */
+    uint32_t mul = props->pp.buffer_bytes / props->pp.period_bytes;
 
     INIT_LIST_HEAD(&props->buf_queue_head);
     props->intermediate =
-        (void *) malloc(sizeof(*props->intermediate) * cnfa_period_bytes);
+        (void *) malloc(sizeof(*props->intermediate) * cnfa_period_bytes * mul);
     PaStreamParameters params = {
         .device = Pa_GetDefaultOutputDevice(),
         .channelCount = props->pp.channels,
@@ -826,7 +828,6 @@ static void virtio_snd_read_pcm_prepare(const virtio_snd_pcm_hdr_t *query,
                             &params, rate, cnfa_period_frames, paClipOff,
                             virtio_snd_tx_stream_cb, &props->v);
     else if (dir == VIRTIO_SND_D_INPUT) {
-        fprintf(stderr, "pcm_prepare input\n");
         err = Pa_OpenStream(&props->pa_stream, &params, NULL /* no output */,
                             rate, cnfa_period_frames, paClipOff,
                             virtio_snd_rx_stream_cb, &props->v);
