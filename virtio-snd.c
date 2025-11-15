@@ -593,7 +593,7 @@ VSND_GEN_TX_QUEUE_HANDLER(flush, 0);
                 response->status =                                           \
                     bad_msg_err ? VIRTIO_SND_S_IO_ERR : VIRTIO_SND_S_OK;     \
                 response->latency_bytes = ret_len;                           \
-                *plen = sizeof(*response);                                   \
+                *plen = sizeof(virtio_snd_pcm_status_t) + ret_len;                                   \
                 goto early_continue;                                         \
             }                                                                \
                                                                              \
