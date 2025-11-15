@@ -566,6 +566,7 @@ VSND_GEN_TX_QUEUE_HANDLER(flush, 0);
         list_for_each_entry (node, &q, q) {                                  \
             uint32_t addr = node->vq_desc.addr;                              \
             uint32_t len = node->vq_desc.len;                                \
+            fprintf(stderr, "*** rx_normal idx %" PRIu32 "\n", len); \
             if (idx == 0) { /* the first descriptor */                       \
                 const virtio_snd_pcm_xfer_t *request =                       \
                     (virtio_snd_pcm_xfer_t *) (base + addr);                 \
@@ -629,6 +630,7 @@ VSND_GEN_TX_QUEUE_HANDLER(flush, 0);
     }
 
 VSND_GEN_RX_QUEUE_HANDLER(normal, 1);
+VSND_GEN_RX_QUEUE_HANDLER(flush, 0);
 #endif
 #if 0
 static int virtio_snd_rx_desc_normal_handler(virtio_snd_state_t *vsnd,
@@ -950,7 +952,10 @@ static void virtio_snd_read_pcm_release(const virtio_snd_pcm_hdr_t *query,
      * - The device MUST NOT complete the control request while there
      *   are pending I/O messages for the specified stream ID.
      */
-    virtio_queue_notify_handler(vsnd, 2, virtio_snd_tx_desc_flush_handler);
+    if(props->p.direction == VIRTIO_SND_D_OUTPUT)
+        virtio_queue_notify_handler(vsnd, 2, virtio_snd_tx_desc_flush_handler);
+    else if(props->p.direction == VIRTIO_SND_D_INPUT)
+        virtio_queue_notify_handler(vsnd, 3, virtio_snd_rx_desc_flush_handler);
 
     *plen = 0;
 }
