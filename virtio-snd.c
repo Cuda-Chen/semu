@@ -1036,7 +1036,6 @@ static int virtio_snd_rx_stream_cb(const void *input,
     int channels = props->pp.channels;
     uint32_t out_buf_sz = frame_cnt * channels;
     uint32_t out_buf_bytes = out_buf_sz * VSND_CNFA_FRAME_SZ;
-    //__virtio_snd_frame_enqueue(output, out_buf_bytes, id);
     
     uint32_t idx = props->buf_idx;
     uint32_t sz = props->buf_sz;
@@ -1045,8 +1044,10 @@ static int virtio_snd_rx_stream_cb(const void *input,
     memcpy(props->intermediate + idx, input, base);
     if(left != 0)
         memcpy(props->intermediate, input + base, left);
-
     props->buf_idx = (props->buf_idx + out_buf_bytes) % sz;
+    // enque to list
+    // FIXME: create cirular queue behavior
+    __virtio_snd_frame_enqueue(props->intermediate + idx, out_buf_bytes, id);
     fprintf(stderr, "+++ virtio_snd_rx_stream_cb"
             " idx %" PRIu32
             " base %" PRIu32 
