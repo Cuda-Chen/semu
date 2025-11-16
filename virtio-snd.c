@@ -394,6 +394,12 @@ static void virtio_queue_notify_handler(virtio_snd_state_t *vsnd,
 static void __virtio_snd_frame_enqueue(void *payload,
                                        uint32_t n,
                                        uint32_t stream_id);
+static void __virtio_snd_rx_frame_enqueue(void *payload,
+                                       uint32_t n,
+                                       uint32_t stream_id);
+static void __virtio_snd_rx_frame_dequeue(void *out,
+                                       uint32_t n,
+                                       uint32_t stream_id);
 typedef struct {
     struct virtq_desc vq_desc;
     struct list_head q;
@@ -562,11 +568,9 @@ VSND_GEN_TX_QUEUE_HANDLER(flush, 0);
         uintptr_t base = (uintptr_t) vsnd->ram;                              \
         uint32_t ret_len = 0;                                                \
         uint8_t bad_msg_err = 0;                                             \
-        fprintf(stderr, "*** rx_normal cnt %d\n", cnt); \
         list_for_each_entry (node, &q, q) {                                  \
             uint32_t addr = node->vq_desc.addr;                              \
             uint32_t len = node->vq_desc.len;                                \
-            fprintf(stderr, "*** rx_normal idx %" PRIu32 "\n", len); \
             if (idx == 0) { /* the first descriptor */                       \
                 const virtio_snd_pcm_xfer_t *request =                       \
                     (virtio_snd_pcm_xfer_t *) (base + addr);                 \
@@ -592,15 +596,16 @@ VSND_GEN_TX_QUEUE_HANDLER(flush, 0);
                     (virtio_snd_pcm_status_t *) (base + addr);               \
                 response->status =                                           \
                     bad_msg_err ? VIRTIO_SND_S_IO_ERR : VIRTIO_SND_S_OK;     \
-                response->latency_bytes = ret_len;                           \
+                response->latency_bytes = 0;                           \
                 *plen = sizeof(virtio_snd_pcm_status_t) + ret_len;                                   \
+                fprintf(stderr, "*** rx get %" PRIu32 " bytes \n", *plen); \
                 goto early_continue;                                         \
             }                                                                \
                                                                              \
             IIF(WRITE)                                                       \
             (/* enqueue frames */                                            \
              void *payload = (void *) (base + addr); if (bad_msg_err == 0)   \
-                 /*__virtio_snd_frame_enqueue(payload, len, stream_id);*/        \
+                 __virtio_snd_rx_frame_dequeue(payload, len, stream_id);        \
              , /* flush queue */                                             \
              (void) stream_id;                                               \
              /* Suppress unused variable warning. */) ret_len += len;        \
@@ -614,8 +619,8 @@ VSND_GEN_TX_QUEUE_HANDLER(flush, 0);
         IIF(WRITE)                                                           \
         (/* enque frames */                                                  \
          virtio_snd_prop_t *props = &vsnd_props[stream_id];                  \
-         props->lock.buf_ev_notity++;                                        \
-         pthread_cond_signal(&props->lock.readable);, /* flush queue */      \
+         /*props->lock.buf_ev_notity++;*/                                        \
+         /*pthread_cond_signal(&props->lock.readable);*/, /* flush queue */      \
          )                                                                   \
                                                                              \
             /* Tear down the descriptor list and free space. */              \
@@ -845,6 +850,8 @@ static void virtio_snd_read_pcm_prepare(const virtio_snd_pcm_hdr_t *query,
     }
 
     *plen = 0;
+
+    fprintf(stderr, "=== pcm_prepare \n");
 }
 
 static void virtio_snd_read_pcm_start(const virtio_snd_pcm_hdr_t *query,
@@ -872,6 +879,8 @@ static void virtio_snd_read_pcm_start(const virtio_snd_pcm_hdr_t *query,
     }
 
     *plen = 0;
+
+    fprintf(stderr, "=== pcm_start \n");
 }
 
 static void virtio_snd_read_pcm_stop(const virtio_snd_pcm_hdr_t *query,
@@ -899,6 +908,8 @@ static void virtio_snd_read_pcm_stop(const virtio_snd_pcm_hdr_t *query,
     }
 
     *plen = 0;
+
+    fprintf(stderr, "=== pcm_stop\n");
 }
 
 static void virtio_snd_read_pcm_release(const virtio_snd_pcm_hdr_t *query,
@@ -996,6 +1007,42 @@ static void __virtio_snd_frame_dequeue(void *out,
     pthread_mutex_unlock(&props->lock.lock);
 }
 
+static void __virtio_snd_rx_frame_dequeue(void *out,
+                                       uint32_t n,
+                                       uint32_t stream_id)
+{
+    virtio_snd_prop_t *props = &vsnd_props[stream_id];
+
+    pthread_mutex_lock(&props->lock.lock);
+    while (props->lock.buf_ev_notity < 1)
+        pthread_cond_wait(&props->lock.readable, &props->lock.lock);
+
+    /* Get the PCM frames from queue */
+    uint32_t written_bytes = 0;
+    while (!list_empty(&props->buf_queue_head) && written_bytes < n) {
+        vsnd_buf_queue_node_t *node =
+            list_first_entry(&props->buf_queue_head, vsnd_buf_queue_node_t, q);
+        uint32_t left = n - written_bytes;
+        uint32_t actual = node->len - node->pos;
+        uint32_t len =
+            left < actual ? left : actual; /* Naive min implementation */
+
+        memcpy(props->intermediate + written_bytes, node->addr + node->pos,
+               len);
+
+        written_bytes += len;
+        node->pos += len;
+        if (node->pos >= node->len)
+            list_del(&node->q);
+    }
+    memcpy(out, props->intermediate, written_bytes);
+
+    props->lock.buf_ev_notity--;
+    pthread_cond_signal(&props->lock.writable);
+    pthread_mutex_unlock(&props->lock.lock);
+}
+
+
 static int virtio_snd_tx_stream_cb(const void *input,
                                 void *output,
                                 unsigned long frame_cnt,
@@ -1030,6 +1077,8 @@ static int virtio_snd_rx_stream_cb(const void *input,
     (void) time_info;
     (void) status_flags;
 
+    fprintf(stderr, "rx_stream_cb\n");
+
     vsnd_stream_sel_t *v_ptr = (vsnd_stream_sel_t *) user_data;
     uint32_t id = v_ptr->stream_id;
     virtio_snd_prop_t *props = &vsnd_props[id];
@@ -1037,22 +1086,7 @@ static int virtio_snd_rx_stream_cb(const void *input,
     uint32_t out_buf_sz = frame_cnt * channels;
     uint32_t out_buf_bytes = out_buf_sz * VSND_CNFA_FRAME_SZ;
     
-    uint32_t idx = props->buf_idx;
-    uint32_t sz = props->buf_sz;
-    uint32_t base = (idx + out_buf_bytes > sz) ? (sz - idx) : out_buf_bytes;
-    uint32_t left = out_buf_bytes - base;
-    memcpy(props->intermediate + idx, input, base);
-    if(left != 0)
-        memcpy(props->intermediate, input + base, left);
-    props->buf_idx = (props->buf_idx + out_buf_bytes) % sz;
-    // enque to list
-    // FIXME: create cirular queue behavior
-    __virtio_snd_frame_enqueue(props->intermediate + idx, out_buf_bytes, id);
-    fprintf(stderr, "+++ virtio_snd_rx_stream_cb"
-            " idx %" PRIu32
-            " base %" PRIu32 
-            " left %" PRIu32 " +++\n",
-            idx, base, left);
+    __virtio_snd_rx_frame_enqueue(input, out_buf_bytes, id);
 
     return paContinue;
 }
@@ -1149,9 +1183,12 @@ static void __virtio_snd_frame_enqueue(void *payload,
     virtio_snd_prop_t *props = &vsnd_props[stream_id];
 
     pthread_mutex_lock(&props->lock.lock);
-    while (props->lock.buf_ev_notity > 0)
+    while (props->lock.buf_ev_notity > 0) {
+        fprintf(stderr, "buf_ev_notity %d", props->lock.buf_ev_notity);
         pthread_cond_wait(&props->lock.writable, &props->lock.lock);
+    }
 
+    fprintf(stderr, "enque start\n");
     /* Add a PCM frame to queue */
     /* As stated in Linux Kernel mailing list [1], we keep the pointer
      * points to the payload [2] so that we can always get up-to-date
@@ -1171,7 +1208,59 @@ static void __virtio_snd_frame_enqueue(void *payload,
     list_push(&node->q, &props->buf_queue_head);
 
     pthread_mutex_unlock(&props->lock.lock);
+    fprintf(stderr, "enque end\n");
 }
+
+// FIXME: create cirular queue behavior
+static void __virtio_snd_rx_frame_enqueue(void *payload,
+                                       uint32_t n,
+                                       uint32_t stream_id)
+{
+    virtio_snd_prop_t *props = &vsnd_props[stream_id];
+
+    pthread_mutex_lock(&props->lock.lock);
+    while (props->lock.buf_ev_notity > 0) {
+        fprintf(stderr, "buf_ev_notity %d", props->lock.buf_ev_notity);
+        pthread_cond_wait(&props->lock.writable, &props->lock.lock);
+    }
+
+    fprintf(stderr, "enque start\n");
+
+    uint32_t idx = props->buf_idx;
+    uint32_t sz = props->buf_sz;
+    uint32_t base = (idx + n > sz) ? (sz - idx) : n;
+    uint32_t left = n - base;
+    memcpy(props->intermediate + idx, payload, base);
+    if(left != 0)
+        memcpy(props->intermediate, payload + base, left);
+    props->buf_idx = (props->buf_idx + n) % sz;
+    /* Add a PCM frame to queue */
+    /* As stated in Linux Kernel mailing list [1], we keep the pointer
+     * points to the payload [2] so that we can always get up-to-date
+     * contents of PCM frames.
+     * References:
+     * [1] https://lore.kernel.org/all/ZQHPeD0fds9sYzHO@pc-79.home/T/
+     * [2]
+     * https://github.com/rust-vmm/vhost-device/blob/eb2e2227e41d48a52e4e6346189b772c5363879d/staging/vhost-device-sound/src/device.rs#L554
+     */
+    /* FIXME: locate the root case of repeating artifact even we
+     * keep the pointer of the payload.
+     */
+    vsnd_buf_queue_node_t *node = malloc(sizeof(*node));
+    node->addr = props->intermediate + idx;
+    node->len = n;
+    node->pos = 0;
+    list_push(&node->q, &props->buf_queue_head);
+
+    pthread_mutex_unlock(&props->lock.lock);
+    fprintf(stderr, "enque end\n");
+    fprintf(stderr, "+++ virtio_snd_rx_enqueue"
+            " idx %" PRIu32
+            " base %" PRIu32 
+            " left %" PRIu32 " +++\n",
+            idx, base, left);
+}
+
 
 static void virtio_queue_notify_handler(
     virtio_snd_state_t *vsnd,
