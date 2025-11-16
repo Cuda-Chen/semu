@@ -605,8 +605,10 @@ VSND_GEN_TX_QUEUE_HANDLER(flush, 0);
                                                                              \
             IIF(WRITE)                                                       \
             (/* enqueue frames */                                            \
-             void *payload = (void *) (base + addr); if (bad_msg_err == 0)   \
-                 __virtio_snd_rx_frame_dequeue(payload, len, stream_id);        \
+             void *payload = (void *) (base + addr); \
+             if (bad_msg_err != 0)   \
+             goto early_continue; \
+             __virtio_snd_rx_frame_dequeue(payload, len, stream_id);        \
              , /* flush queue */                                             \
              (void) stream_id;                                               \
              /* Suppress unused variable warning. */) ret_len += len;        \
@@ -620,8 +622,8 @@ VSND_GEN_TX_QUEUE_HANDLER(flush, 0);
         IIF(WRITE)                                                           \
         (/* enque frames */                                                  \
          virtio_snd_prop_t *props = &vsnd_props[stream_id];                  \
-         /*props->lock.buf_ev_notity++;*/                                        \
-         /*pthread_cond_signal(&props->lock.readable);*/, /* flush queue */      \
+         props->lock.buf_ev_notity++;                                        \
+         pthread_cond_signal(&props->lock.readable);, /* flush queue */      \
          )                                                                   \
                                                                              \
             /* Tear down the descriptor list and free space. */              \
@@ -1028,7 +1030,7 @@ static void __virtio_snd_rx_frame_dequeue(void *out,
         uint32_t len =
             left < actual ? left : actual; /* Naive min implementation */
 
-        memcpy(props->intermediate + written_bytes, node->addr + node->pos,
+        memcpy(out + written_bytes, node->addr + node->pos,
                len);
 
         written_bytes += len;
@@ -1036,7 +1038,6 @@ static void __virtio_snd_rx_frame_dequeue(void *out,
         if (node->pos >= node->len)
             list_del(&node->q);
     }
-    memcpy(out, props->intermediate, written_bytes);
 
     props->lock.buf_ev_notity--;
     pthread_cond_signal(&props->lock.writable);
