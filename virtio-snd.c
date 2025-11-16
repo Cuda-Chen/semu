@@ -405,10 +405,11 @@ typedef struct {
     struct list_head q;
 } virtq_desc_queue_node_t;
 
-/* Flush only stream_id 0.
- * FIXME: let TX queue flushing can select arbitrary stream_id.
+/* Flush only default streams (TX: stream_id 0, RX: stream_id 1).
+ * FIXME: let TX and RX queue to flush can select arbitrary stream_id.
  */
-static uint32_t flush_stream_id = 0;
+static uint32_t flush_tx_stream_id = 0;
+static uint32_t flush_rx_stream_id = 1;
 
 #define VSND_GEN_TX_QUEUE_HANDLER(NAME_SUFFIX, WRITE)                        \
     static int virtio_snd_tx_desc_##NAME_SUFFIX##_handler(                   \
@@ -466,7 +467,7 @@ static uint32_t flush_stream_id = 0;
                 (/* enqueue frames */                                        \
                  bad_msg_err = stream_id >= VSND_DEV_CNT_MAX ? 1 : 0;        \
                  , /* flush queue */                                         \
-                 bad_msg_err = stream_id != flush_stream_id                  \
+                 bad_msg_err = stream_id != flush_tx_stream_id                  \
                                    ? 1                                       \
                                    : 0; /* select only stream_id 0 */        \
                  ) goto early_continue;                                      \
@@ -579,7 +580,7 @@ VSND_GEN_TX_QUEUE_HANDLER(flush, 0);
                 (/* enqueue frames */                                        \
                  bad_msg_err = stream_id >= VSND_DEV_CNT_MAX ? 1 : 0;        \
                  , /* flush queue */                                         \
-                 bad_msg_err = stream_id != flush_stream_id                  \
+                 bad_msg_err = stream_id != flush_rx_stream_id                  \
                                    ? 1                                       \
                                    : 0; /* select only stream_id 0 */        \
                  ) goto early_continue;                                      \
