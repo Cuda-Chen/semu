@@ -299,6 +299,8 @@ typedef struct {
     struct list_head buf_queue_head;
     // PCM frame intermediate buffer
     void *intermediate;
+    uint32_t buf_sz;
+    uint32_t buf_idx;
 
     // playback control
     vsnd_stream_sel_t v;
@@ -1315,41 +1317,25 @@ static void virtio_queue_notify_handler(
         vsnd->InterruptStatus |= VIRTIO_INT__USED_RING;
 }
 
-/* TX thread context */
-/* Receive PCM frames from driver. */
-static void *tx_func(void *args)
-{
-    virtio_snd_state_t *vsnd = (virtio_snd_state_t *) args;
-    for (;;) {
-        pthread_mutex_lock(&virtio_snd_tx_mutex);
-        while (tx_ev_notify <= 0)
-            pthread_cond_wait(&virtio_snd_tx_cond, &virtio_snd_tx_mutex);
-
-        tx_ev_notify--;
-        virtio_queue_notify_handler(vsnd, 2, virtio_snd_tx_desc_normal_handler);
-
-        pthread_mutex_unlock(&virtio_snd_tx_mutex);
+#define VSND_GEN_IO_FUNC(verb, queue_idx)                                  \
+    static void *verb##_func(void *args)                                   \
+    {                                                                      \
+        virtio_snd_state_t *vsnd = (virtio_snd_state_t *) args;            \
+        for (;;) {                                                         \
+            pthread_mutex_lock(&virtio_snd_##verb##_mutex);                \
+            while (verb##_ev_notify <= 0)                                  \
+                pthread_cond_wait(&virtio_snd_##verb##_cond,               \
+                                  &virtio_snd_##verb##_mutex);             \
+            verb##_ev_notify--;                                            \
+            virtio_queue_notify_handler(                                   \
+                vsnd, queue_idx, virtio_snd_##verb##_desc_normal_handler); \
+            pthread_mutex_unlock(&virtio_snd_##verb##_mutex);              \
+        }                                                                  \
+        pthread_exit(NULL);                                                \
     }
-    pthread_exit(NULL);
-}
 
-/* RX thread context */
-/* Send PCM frames to driver. */
-static void *rx_func(void *args)
-{
-    virtio_snd_state_t *vsnd = (virtio_snd_state_t *) args;
-    for (;;) {
-        pthread_mutex_lock(&virtio_snd_rx_mutex);
-        while (rx_ev_notify <= 0)
-            pthread_cond_wait(&virtio_snd_rx_cond, &virtio_snd_rx_mutex);
-
-        rx_ev_notify--;
-        virtio_queue_notify_handler(vsnd, 3, virtio_snd_rx_desc_normal_handler);
-
-        pthread_mutex_unlock(&virtio_snd_rx_mutex);
-    }
-    pthread_exit(NULL);
-}
+VSND_GEN_IO_FUNC(tx, 2)
+VSND_GEN_IO_FUNC(rx, 3)
 
 static bool virtio_snd_reg_read(virtio_snd_state_t *vsnd,
                                 uint32_t addr,
