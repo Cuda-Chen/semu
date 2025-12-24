@@ -369,7 +369,13 @@ static pthread_cond_t virtio_snd_rx_cond = PTHREAD_COND_INITIALIZER;
 static int tx_ev_notify;
 static int rx_ev_notify;
 
-// FIXME: set this variables into each capture stream's structure
+/* A flag to let device to dequeue the PCM frames after set to pcm_start state
+ * in RX part. The reason is that the Linux virtio-sound driver
+ * will pre-buffer the RX frames (this part is not mentioned in VirtIO
+ * Spec), which eventually gets no any frames as we are in pcm_prepare
+ * state.
+ */
+/* FIXME: set this variables into each capture stream's structure. */
 static int rx_ev_start;
 
 /* vsnd virtq callback type */
@@ -520,9 +526,8 @@ static uint32_t flush_rx_stream_id = 1;
                      &props->lock.writable);), /* flush queue */             \
          )                                                                   \
                                                                              \
-        finally: \
-            /* Tear down the descriptor list and free space. */              \
-            virtq_desc_queue_node_t *tmp = NULL;                             \
+            finally : /* Tear down the descriptor list and free space. */    \
+                      virtq_desc_queue_node_t *tmp = NULL;                   \
         list_for_each_entry_safe (node, tmp, &q, q) {                        \
             list_del(&node->q);                                              \
             free(node);                                                      \
@@ -926,6 +931,7 @@ static void __virtio_snd_rx_frame_dequeue(void *out,
     while (!(props->lock.buf_ev_notity > 0 && rx_ev_start == 1))
         pthread_cond_wait(&props->lock.readable, &props->lock.lock);
 
+    fprintf(stderr, "deque start\n");
     /* Get the PCM frames from queue */
     uint32_t written_bytes = 0;
     while (!list_empty(&props->buf_queue_head) && written_bytes < n) {
@@ -937,6 +943,7 @@ static void __virtio_snd_rx_frame_dequeue(void *out,
             left < actual ? left : actual; /* Naive min implementation */
 
         memcpy(out + written_bytes, node->addr + node->pos, len);
+        fprintf(stderr, "write %" PRIu32 " bytes\n", len);
 
         written_bytes += len;
         node->pos += len;
@@ -946,7 +953,7 @@ static void __virtio_snd_rx_frame_dequeue(void *out,
             free(node);
         }
     }
-
+    fprintf(stderr, "deque end\n");
     pthread_mutex_unlock(&props->lock.lock);
 }
 
@@ -1119,29 +1126,32 @@ static void __virtio_snd_rx_frame_enqueue(const void *payload,
 {
     virtio_snd_prop_t *props = &vsnd_props[stream_id];
 
-    pthread_mutex_lock(&props->lock.lock);
+    /*pthread_mutex_lock(&props->lock.lock);
     while (props->lock.buf_ev_notity > 0)
-        pthread_cond_wait(&props->lock.writable, &props->lock.lock);
+        pthread_cond_wait(&props->lock.writable, &props->lock.lock);*/
+    if (pthread_mutex_trylock(&props->lock.lock) == 0) {
+        fprintf(stderr, "enque start \n");
+        /* Add a PCM frame to queue */
+        vsnd_buf_queue_node_t *node = malloc(sizeof(*node));
+        if (!node)
+            goto rx_frame_enque_finally;
+        node->addr = malloc(sizeof(*node->addr) * n);
+        if (!node->addr) {
+            free(node);
+            goto rx_frame_enque_finally;
+        }
+        memcpy(node->addr, payload, n);
+        node->len = n;
+        node->pos = 0;
+        list_push(&node->q, &props->buf_queue_head);
 
-    /* Add a PCM frame to queue */
-    vsnd_buf_queue_node_t *node = malloc(sizeof(*node));
-    if (!node)
-        goto rx_frame_enque_finally;
-    node->addr = malloc(sizeof(*node->addr) * n);
-    if (!node->addr) {
-        free(node);
-        goto rx_frame_enque_finally;
+        props->lock.buf_ev_notity++;
+        pthread_cond_signal(&props->lock.readable);
+
+    rx_frame_enque_finally:
+        fprintf(stderr, "enque end\n");
+        pthread_mutex_unlock(&props->lock.lock);
     }
-    memcpy(node->addr, payload, n);
-    node->len = n;
-    node->pos = 0;
-    list_push(&node->q, &props->buf_queue_head);
-
-    props->lock.buf_ev_notity++;
-    pthread_cond_signal(&props->lock.readable);
-
-rx_frame_enque_finally:
-    pthread_mutex_unlock(&props->lock.lock);
 }
 
 static void virtio_queue_notify_handler(
