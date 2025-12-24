@@ -394,7 +394,7 @@ static int virtio_snd_rx_stream_cb(const void *input,
 static void virtio_queue_notify_handler(virtio_snd_state_t *vsnd,
                                         int index, /* virtq index */
                                         vsnd_virtq_cb cb);
-static void __virtio_snd_frame_enqueue(void *payload,
+static void __virtio_snd_tx_frame_enqueue(void *payload,
                                        uint32_t n,
                                        uint32_t stream_id);
 static void __virtio_snd_rx_frame_enqueue(const void *payload,
@@ -414,8 +414,8 @@ typedef struct {
 static uint32_t flush_tx_stream_id = 0;
 static uint32_t flush_rx_stream_id = 1;
 
-#define VSND_GEN_IO_QUEUE_HANDLER(NAME_SUFFIX, WRITE)                        \
-    static int virtio_snd_tx_desc_##NAME_SUFFIX##_handler(                   \
+#define VSND_GEN_IO_QUEUE_HANDLER(VERB, NAME_SUFFIX, TR, WRITE)                        \
+    static int virtio_snd_##VERB##_desc_##NAME_SUFFIX##_handler(                   \
         virtio_snd_state_t *vsnd, const virtio_snd_queue_t *queue,           \
         uint32_t desc_idx, uint32_t *plen)                                   \
     {                                                                        \
@@ -470,7 +470,7 @@ static uint32_t flush_rx_stream_id = 1;
                 (/* enqueue frames */                                        \
                  bad_msg_err = stream_id >= VSND_DEV_CNT_MAX ? 1 : 0;        \
                  , /* flush queue */                                         \
-                 bad_msg_err = stream_id != flush_tx_stream_id               \
+                 bad_msg_err = stream_id != flush_##VERB##_stream_id               \
                                    ? 1                                       \
                                    : 0; /* select only stream_id 0 */        \
                  ) goto early_continue;                                      \
@@ -495,7 +495,7 @@ static uint32_t flush_rx_stream_id = 1;
             IIF(WRITE)                                                       \
             (/* enqueue frames */                                            \
              void *payload = (void *) (base + addr); if (bad_msg_err == 0)   \
-                 __virtio_snd_frame_enqueue(payload, len, stream_id);        \
+                 __virtio_snd_##VERB##frame_enqueue(payload, len, stream_id);        \
              , /* flush queue */                                             \
              (void) stream_id;                                               \
              /* Suppress unused variable warning. */) ret_len += len;        \
@@ -605,7 +605,7 @@ static uint32_t flush_rx_stream_id = 1;
             IIF(WRITE)                                                       \
             (/* enqueue frames */                                            \
              void *payload = (void *) (base + addr); if (bad_msg_err == 0)   \
-                 __virtio_snd_frame_enqueue(payload, len, stream_id);        \
+                 __virtio_snd_tx_frame_enqueue(payload, len, stream_id);        \
              , /* flush queue */                                             \
              (void) stream_id;                                               \
              /* Suppress unused variable warning. */) ret_len += len;        \
@@ -1095,7 +1095,7 @@ static void virtio_snd_read_pcm_release(const virtio_snd_pcm_hdr_t *query,
     *plen = 0;
 }
 
-static void __virtio_snd_frame_dequeue(void *out,
+static void __virtio_snd_tx_frame_dequeue(void *out,
                                        uint32_t n,
                                        uint32_t stream_id)
 {
@@ -1185,7 +1185,7 @@ static int virtio_snd_tx_stream_cb(const void *input,
     int channels = vsnd_props[id].pp.channels;
     uint32_t out_buf_sz = frame_cnt * channels;
     uint32_t out_buf_bytes = out_buf_sz * VSND_CNFA_FRAME_SZ;
-    __virtio_snd_frame_dequeue(output, out_buf_bytes, id);
+    __virtio_snd_tx_frame_dequeue(output, out_buf_bytes, id);
 
     return paContinue;
 }
@@ -1299,7 +1299,7 @@ static int virtio_snd_ctrl_desc_handler(virtio_snd_state_t *vsnd,
 }
 
 
-static void __virtio_snd_frame_enqueue(void *payload,
+static void __virtio_snd_tx_frame_enqueue(void *payload,
                                        uint32_t n,
                                        uint32_t stream_id)
 {
