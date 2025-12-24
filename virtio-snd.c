@@ -299,8 +299,6 @@ typedef struct {
     struct list_head buf_queue_head;
     // PCM frame intermediate buffer
     void *intermediate;
-    uint32_t buf_sz;
-    uint32_t buf_idx;
 
     // playback control
     vsnd_stream_sel_t v;
@@ -1464,8 +1462,10 @@ static bool virtio_snd_reg_write(virtio_snd_state_t *vsnd,
                                             virtio_snd_ctrl_desc_handler);
                 break;
             case VSND_QUEUE_TX:
+                pthread_mutex_lock(&virtio_snd_tx_mutex);
                 tx_ev_notify++;
                 pthread_cond_signal(&virtio_snd_tx_cond);
+                pthread_mutex_unlock(&virtio_snd_tx_mutex);
                 break;
             case VSND_QUEUE_RX:
                 pthread_mutex_lock(&virtio_snd_rx_mutex);
