@@ -2,6 +2,15 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdatomic.h>
+
+#if defined(__x86_64__) || defined(__i386__)
+#define CPU_PAUSE() asm("pause")
+#elif defined(__aarch64__)
+#define CPU_PAUSE() asm("isb")
+#else
+#define CPU_PAUSE() do { /* nop */ } while (0)
+#endif
 
 /* To suppress RCU CPU stall warnings, the emulator provides a fake timer to
  * the Guest OS during the boot process. After the boot process is complete, the
@@ -17,6 +26,7 @@ extern bool boot_complete;
 typedef struct {
     uint64_t begin;
     uint64_t freq;
+    volatile atomic_flag flag;
 } semu_timer_t;
 
 void semu_timer_init(semu_timer_t *timer, uint64_t freq, int n_harts);

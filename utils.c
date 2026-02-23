@@ -171,10 +171,12 @@ void semu_timer_init(semu_timer_t *timer, uint64_t freq, int n_harts)
 
 uint64_t semu_timer_get(semu_timer_t *timer)
 {
-    return semu_timer_clocksource(timer) - timer->begin;
+    //return semu_timer_clocksource(timer) - timer->begin;
+    return semu_timer_clocksource(timer) - atomic_load_explicit(&timer->begin, memory_order_relaxed);
 }
 
 void semu_timer_rebase(semu_timer_t *timer, uint64_t time)
 {
-    timer->begin = semu_timer_clocksource(timer) - time;
+    //timer->begin = semu_timer_clocksource(timer) - time;
+    atomic_store_explicit(&timer->begin, semu_timer_clocksource(timer) - time, memory_order_relaxed);
 }
