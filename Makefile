@@ -2,7 +2,7 @@ include mk/common.mk
 include mk/check-libs.mk
 
 CC ?= gcc
-CFLAGS := -O2 -g -Wall -Wextra
+CFLAGS := -O2 -g -Wall -Wextra -std=c11
 CFLAGS += -include common.h
 
 # clock frequency

@@ -1,8 +1,10 @@
+#define _GNU_SOURCE
+
 #include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <time.h>
-
+#include <stdatomic.h>
 #include "utils.h"
 
 #if defined(__APPLE__)
