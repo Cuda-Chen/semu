@@ -1,0 +1,164 @@
+/*
+ * semu is freely redistributable under the MIT License. See the file
+ * "LICENSE" for information on usage and redistribution of this file.
+ */
+
+#include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "rtc.h"
+#include "riscv_private.h"
+
+static uint64_t now_nsec;
+
+uint64_t rtc_get_now_nsec(rtc_state_t *rtc)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    fprintf(stderr, "===%d===\n", ts.tv_sec);
+    return (uint64_t) (ts.tv_sec * 1e9) + ts.tv_nsec + rtc->clock_offset;
+}
+
+static void rtc_reg_read(rtc_state_t *rtc, uint32_t addr, uint32_t *value)
+{
+    uint32_t rtc_read_val = 0;
+
+    /*
+     * To read the value, the kernel must perform an IO_READ(TIME_LOW), which
+     * returns an unsigned 32-bit value, before an IO_READ(TIME_HIGH), which
+     * returns a signed 32-bit value, corresponding to the higher half of the
+     * full value. [1]
+     *
+     * [1]
+     * https://android.googlesource.com/platform/external/qemu/+/refs/heads/emu-2.0-release/docs/GOLDFISH-VIRTUAL-HARDWARE.TXT
+     */
+    switch (addr) {
+    case RTC_TIME_LOW:
+        now_nsec = rtc_get_now_nsec(rtc);
+        rtc->time_low = (uint32_t) (now_nsec & MASK(32));
+        rtc_read_val = rtc->time_low;
+        break;
+    case RTC_TIME_HIGH:
+        /* reuse the now_nsec when reading RTC_TIME_LOW */
+        rtc->time_high = (uint32_t) (now_nsec >> 32);
+        rtc_read_val = rtc->time_high;
+        break;
+    case RTC_ALARM_LOW:
+        rtc_read_val = rtc->alarm_low;
+        break;
+    case RTC_ALARM_HIGH:
+        rtc_read_val = rtc->alarm_high;
+        break;
+    case RTC_ALARM_STATUS:
+        rtc_read_val = rtc->alarm_status;
+        break;
+    default:
+        fprintf(stderr, "Unsupported RTC read operation, 0x%x", addr);
+        break;
+    }
+
+    *value = rtc_read_val;
+}
+
+static void rtc_reg_write(rtc_state_t *rtc, uint32_t addr, uint32_t value)
+{
+    switch (addr) {
+    case RTC_TIME_LOW:
+        now_nsec = rtc_get_now_nsec(rtc);
+        rtc->clock_offset += (uint64_t) (value) - (now_nsec & MASK(32));
+        break;
+    case RTC_TIME_HIGH:
+        /* reuse the now_nsec when writing RTC_TIME_LOW */
+        rtc->clock_offset += ((uint64_t) (value) << 32) -
+                             (now_nsec & ((uint64_t) (MASK(32)) << 32));
+        break;
+    case RTC_ALARM_LOW:
+        rtc->alarm_low = value;
+        break;
+    case RTC_ALARM_HIGH:
+        rtc->alarm_high = value;
+        break;
+    case RTC_IRQ_ENABLED:
+        rtc->irq_enabled = value;
+        break;
+    case RTC_CLEAR_ALARM:
+        rtc->alarm_status = 0;
+        break;
+    case RTC_CLEAR_INTERRUPT:
+        rtc->interrupt_status = 0;
+        break;
+    default:
+        fprintf(stderr, "Unsupported RTC write operation, 0x%x", addr);
+        break;
+    }
+    return;
+}
+
+void rtc_read(hart_t *vm,
+              rtc_state_t *rtc,
+              uint32_t addr,
+              uint8_t width,
+              uint32_t *value)
+{
+    switch (width) {
+    case RV_MEM_LW:
+        rtc_reg_read(rtc, addr, value);
+        break;
+    case RV_MEM_LBU:
+    case RV_MEM_LB:
+    case RV_MEM_LHU:
+    case RV_MEM_LH:
+        vm_set_exception(vm, RV_EXC_LOAD_MISALIGN, vm->exc_val);
+        break;
+    default:
+        vm_set_exception(vm, RV_EXC_ILLEGAL_INSN, 0);
+        break;
+    }
+}
+
+void rtc_write(hart_t *vm,
+               rtc_state_t *rtc,
+               uint32_t addr,
+               uint8_t width,
+               uint32_t value)
+{
+    switch (width) {
+    case RV_MEM_SW:
+        rtc_reg_write(rtc, addr, value);
+        break;
+    case RV_MEM_SH:
+    case RV_MEM_SB:
+        vm_set_exception(vm, RV_EXC_LOAD_MISALIGN, vm->exc_val);
+        break;
+    default:
+        vm_set_exception(vm, RV_EXC_ILLEGAL_INSN, 0);
+        break;
+    }
+}
+
+void rtc_new(rtc_state_t *rtc)
+{
+    rtc = calloc(1, sizeof(rtc_state_t));
+    assert(rtc);
+
+    /*
+     * The rtc->time_low/high values can be updated through the RTC_SET_TIME
+     * ioctl operation. Therefore, they should be initialized to match the
+     * host OS time during initialization.
+     */
+    now_nsec = rtc_get_now_nsec(rtc);
+    rtc->time_low = (uint32_t) (now_nsec & MASK(32));
+    rtc->time_high = (uint32_t) (now_nsec >> 32);
+}
+
+void rtc_delete(rtc_state_t *rtc)
+{
+    free(rtc);
+}

@@ -17,7 +17,8 @@ function OK
     printf " [ ${PASS_COLOR} OK ${NO_COLOR} ]\n"
 }
 
-PARALLEL="-j$(nproc)"
+#PARALLEL="-j$(nproc)"
+PARALLEL="-j3"
 
 DIRECTFB2_REPO="https://github.com/directfb2/DirectFB2"
 DIRECTFB2_REV="7d4682d0cc092ed2f28c903175d1a0c104e9e9a8"

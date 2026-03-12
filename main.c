@@ -37,6 +37,7 @@
 #endif
 #include "riscv.h"
 #include "riscv_private.h"
+#include "rtc.h"
 
 #define PRIV(x) ((emu_state_t *) x->priv)
 
@@ -197,6 +198,16 @@ static void emu_update_vfs_interrupts(vm_t *vm)
 }
 #endif
 
+void emu_update_rtc_interrupts(vm_t *vm)
+{
+    emu_state_t *data = PRIV(vm->hart[0]);
+    if (data->rtc.interrupt_status)
+        data->plic.active |= IRQ_RTC_BIT;
+    else
+        data->plic.active &= ~IRQ_RTC_BIT;
+    plic_update_interrupts(vm, &data->plic);
+}
+
 /* Peripheral I/O polling strategy
  *
  * We use inline polling instead of dedicated I/O coroutines for peripherals.
@@ -227,6 +238,15 @@ static inline void emu_tick_peripherals(emu_state_t *emu)
         u8250_flush_out(&emu->uart);
         if (emu->uart.in_ready)
             emu_update_uart_interrupts(vm);
+
+        if (emu->rtc.irq_enabled) {
+            uint64_t now_nsec = rtc_get_now_nsec(&emu->rtc);
+            if (rtc_alarm_fire(&emu->rtc, now_nsec)) {
+                emu->rtc.alarm_status = 1;
+                emu->rtc.interrupt_status = 1;
+                emu_update_rtc_interrupts(vm);
+            }
+        }
 
 #if SEMU_HAS(VIRTIONET)
         virtio_net_refresh_queue(&emu->vnet);
@@ -350,6 +370,12 @@ static void mem_load(hart_t *hart,
             virtio_gpu_read(hart, &data->vgpu, addr & 0xFFFFF, width, value);
             return;
 #endif
+        case 0x4C: /* RTC */
+            rtc_read(hart, &data->rtc, addr & 0xFFFFF, width,
+                              value);
+            emu_update_rtc_interrupts(hart->vm);
+            return;
+
         }
     }
     vm_set_exception(hart, RV_EXC_LOAD_FAULT, hart->exc_val);
@@ -437,12 +463,19 @@ static void mem_store(hart_t *hart,
             emu_update_vinput_mouse_interrupts(hart->vm);
             return;
 #endif
+
 #if SEMU_HAS(VIRTIOGPU)
         case 0x4B: /* virtio-gpu */
             virtio_gpu_write(hart, &data->vgpu, addr & 0xFFFFF, width, value);
             emu_update_vgpu_interrupts(hart->vm);
             return;
 #endif
+
+        case 0x4C: /* RTC */
+            rtc_write(hart, &data->rtc, addr & 0xFFFFF, width, value);
+            emu_update_rtc_interrupts(hart->vm);
+            return;
+
         }
     }
     vm_set_exception(hart, RV_EXC_STORE_FAULT, hart->exc_val);
@@ -1065,6 +1098,8 @@ static int semu_init(emu_state_t *emu, int argc, char **argv)
         }
     }
 #endif
+    rtc_new(&(emu->rtc));
+    assert(&(emu->rtc));
 
     emu->peripheral_update_ctr = 0;
     emu->debug = debug;

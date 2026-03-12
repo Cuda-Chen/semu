@@ -10,7 +10,7 @@
 
 #define UNUSED __attribute__((unused))
 
-#define MASK(n) (~((~0U << (n))))
+#define MASK(n) ((n) >= 64 ? ~0ULL : ~(~0ULL << (n))) 
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(*(a)))
 

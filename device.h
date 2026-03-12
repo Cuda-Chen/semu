@@ -5,6 +5,7 @@
 #endif
 #include "riscv.h"
 #include "virtio.h"
+#include "rtc.h"
 
 /* RAM */
 
@@ -600,6 +601,8 @@ typedef struct {
     mtimer_state_t mtimer;
     mswi_state_t mswi;
     sswi_state_t sswi;
+
+    rtc_state_t rtc;
 
     uint32_t peripheral_update_ctr;
 
