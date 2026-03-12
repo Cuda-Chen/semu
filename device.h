@@ -5,6 +5,7 @@
 #endif
 #include "riscv.h"
 #include "virtio.h"
+#include "rtc.h"
 
 /* RAM */
 
@@ -542,6 +543,8 @@ typedef struct {
      */
     int wake_fd[2];
 #endif
+
+    rtc_state_t rtc;
 
     uint32_t peripheral_update_ctr;
 

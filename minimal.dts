@@ -115,5 +115,12 @@
             interrupts = <8>;
         };
 #endif
+
+        rtc0: rtc@4b00000 {
+            compatible = "google,goldfish-rtc";
+            reg = <0x4b00000 0x1000>;
+            interrupts = <9>;
+            interrupt-parent = <&plic0>;
+        };
     };
 };
