@@ -24,7 +24,7 @@ uint64_t rtc_get_now_nsec(rtc_state_t *rtc)
     return (uint64_t) (ts.tv_sec * 1e9) + ts.tv_nsec + rtc->clock_offset;
 }
 
-uint32_t rtc_read(rtc_state_t *rtc, uint32_t addr)
+uint32_t rtc_read(hart_t *vm, rtc_state_t *rtc, uint32_t addr, uint8_t width, uint32_t *value)
 {
     uint32_t rtc_read_val = 0;
 
@@ -58,14 +58,14 @@ uint32_t rtc_read(rtc_state_t *rtc, uint32_t addr)
         rtc_read_val = rtc->alarm_status;
         break;
     default:
-        rv_log_error("Unsupported RTC read operation, 0x%x", addr);
+        fprintf(stderr, "Unsupported RTC read operation, 0x%x", addr);
         break;
     }
 
     return rtc_read_val;
 }
 
-void rtc_write(rtc_state_t *rtc, uint32_t addr, uint32_t value)
+void rtc_write(hart_t *vm, rtc_state_t *rtc, uint32_t addr, uint8_t width, uint32_t value)
 {
     switch (addr) {
     case RTC_TIME_LOW:
@@ -93,7 +93,7 @@ void rtc_write(rtc_state_t *rtc, uint32_t addr, uint32_t value)
         rtc->interrupt_status = 0;
         break;
     default:
-        rv_log_error("Unsupported RTC write operation, 0x%x", addr);
+        fprintf(stderr, "Unsupported RTC write operation, 0x%x", addr);
         break;
     }
     return;

@@ -8,6 +8,8 @@
 /* Check: https://github.com/torvalds/linux/blob/v6.1/drivers/rtc/rtc-goldfish.c
  */
 
+#include "riscv.h"
+
 /* Google Goldfish RTC MMIO registers */
 #define RTC_REG_LIST                   \
     _(TIME_LOW, 0x00)        /* R/W */ \
@@ -49,9 +51,9 @@ typedef struct {
 
 uint64_t rtc_get_now_nsec(rtc_state_t *rtc);
 
-uint32_t rtc_read(rtc_state_t *rtc, uint32_t addr);
+uint32_t rtc_read(hart_t *core, rtc_state_t *rtc, uint32_t addr, uint8_t width, uint32_t *value);
 
-void rtc_write(rtc_state_t *rtc, uint32_t addr, uint32_t value);
+void rtc_write(hart_t *core, rtc_state_t *rtc, uint32_t addr, uint8_t width, uint32_t value);
 
 rtc_state_t *rtc_new();
 

@@ -218,6 +218,7 @@ OBJS := \
 	main.o \
 	aclint.o \
 	coro.o \
+	rtc.o \
 	$(OBJS_EXTRA)
 
 deps := $(OBJS:%.o=.%.o.d)

@@ -32,6 +32,7 @@
 #endif
 #include "riscv.h"
 #include "riscv_private.h"
+#include "rtc.h"
 #define PRIV(x) ((emu_state_t *) x->priv)
 
 /* Forward declarations for coroutine support */
@@ -179,6 +180,16 @@ static void emu_update_vfs_interrupts(vm_t *vm)
 }
 #endif
 
+void emu_update_rtc_interrupts(vm_t *vm)
+{
+    emu_state_t *data = PRIV(vm->hart[0]);
+    if (data->rtc.interrupt_status)
+        data->plic.active |= IRQ_RTC_BIT;
+    else
+        data->plic.active &= ~IRQ_RTC_BIT;
+    plic_update_interrupts(vm, &data->plic);
+}
+
 /* Peripheral I/O polling strategy
  *
  * We use inline polling instead of dedicated I/O coroutines for peripherals.
@@ -253,6 +264,9 @@ static inline void emu_tick_peripherals(emu_state_t *emu)
         if (g_window.window_is_closed())
             emu->stopped = true;
 #endif
+
+        if(emu->rtc.interrupt_status)
+            emu_update_rtc_interrupts(vm);
     }
 }
 
@@ -328,6 +342,12 @@ static void mem_load(hart_t *hart,
             emu_update_vinput_mouse_interrupts(hart->vm);
             return;
 #endif
+        case 0x4B: /* RTC */
+            rtc_read(hart, &data->rtc, addr & 0xFFFFF, width,
+                              value);
+            emu_update_rtc_interrupts(hart->vm);
+            return;
+
         }
     }
     vm_set_exception(hart, RV_EXC_LOAD_FAULT, hart->exc_val);
@@ -415,6 +435,10 @@ static void mem_store(hart_t *hart,
             emu_update_vinput_mouse_interrupts(hart->vm);
             return;
 #endif
+        case 0x4B: /* RTC */
+            rtc_write(hart, &data->rtc, addr & 0xFFFFF, width, value);
+            emu_update_rtc_interrupts(hart->vm);
+            return;
         }
     }
     vm_set_exception(hart, RV_EXC_STORE_FAULT, hart->exc_val);
