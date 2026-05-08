@@ -221,6 +221,15 @@ static inline void emu_tick_peripherals(emu_state_t *emu)
         if (emu->uart.in_ready)
             emu_update_uart_interrupts(vm);
 
+        if (emu->rtc.irq_enabled) {
+            uint64_t now_nsec = rtc_get_now_nsec(&emu->rtc);
+            if (rtc_alarm_fire(&emu->rtc, now_nsec)) {
+                emu->rtc.alarm_status = 1;
+                emu->rtc.interrupt_status = 1;
+                emu_update_rtc_interrupts(vm);
+            }
+        }
+
 #if SEMU_HAS(VIRTIONET)
         virtio_net_refresh_queue(&emu->vnet);
         if (emu->vnet.InterruptStatus)
@@ -264,9 +273,6 @@ static inline void emu_tick_peripherals(emu_state_t *emu)
         if (g_window.window_is_closed())
             emu->stopped = true;
 #endif
-
-        if(emu->rtc.interrupt_status)
-            emu_update_rtc_interrupts(vm);
     }
 }
 
