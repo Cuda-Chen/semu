@@ -1044,6 +1044,8 @@ static int semu_init(emu_state_t *emu, int argc, char **argv)
         fcntl(emu->wake_fd[1], F_SETFL, O_NONBLOCK);
     }
 #endif
+    rtc_new(&(emu->rtc));
+    assert(&(emu->rtc));
 
     emu->peripheral_update_ctr = 0;
     emu->debug = debug;

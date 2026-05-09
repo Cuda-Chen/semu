@@ -99,9 +99,9 @@ void rtc_write(hart_t *vm, rtc_state_t *rtc, uint32_t addr, uint8_t width, uint3
     return;
 }
 
-rtc_state_t *rtc_new()
+void rtc_new(rtc_state_t *rtc)
 {
-    rtc_state_t *rtc = calloc(1, sizeof(rtc_state_t));
+    rtc = calloc(1, sizeof(rtc_state_t));
     assert(rtc);
 
     /*
@@ -112,8 +112,6 @@ rtc_state_t *rtc_new()
     now_nsec = rtc_get_now_nsec(rtc);
     rtc->time_low = (uint32_t) (now_nsec & MASK(32));
     rtc->time_high = (uint32_t) (now_nsec >> 32);
-
-    return rtc;
 }
 
 void rtc_delete(rtc_state_t *rtc)

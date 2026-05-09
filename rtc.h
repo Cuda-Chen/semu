@@ -55,6 +55,6 @@ uint32_t rtc_read(hart_t *core, rtc_state_t *rtc, uint32_t addr, uint8_t width, 
 
 void rtc_write(hart_t *core, rtc_state_t *rtc, uint32_t addr, uint8_t width, uint32_t value);
 
-rtc_state_t *rtc_new();
+void rtc_new(rtc_state_t *rtc);
 
 void rtc_delete(rtc_state_t *rtc);
