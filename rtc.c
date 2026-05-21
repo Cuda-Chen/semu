@@ -22,7 +22,6 @@ uint64_t rtc_get_now_nsec(rtc_state_t *rtc)
 {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
-    fprintf(stderr, "===%d===\n", ts.tv_sec);
     return (uint64_t) (ts.tv_sec * 1e9) + ts.tv_nsec + rtc->clock_offset;
 }
 
