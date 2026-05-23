@@ -41,7 +41,7 @@ typedef struct {
     uint64_t clock_offset;
 } rtc_state_t;
 
-#define IRQ_RTC_SHIFT 7
+#define IRQ_RTC_SHIFT 10
 #define IRQ_RTC_BIT (1 << IRQ_RTC_SHIFT)
 
 #define rtc_alarm_fire(rtc, now_nsec) \
@@ -52,10 +52,10 @@ typedef struct {
 uint64_t rtc_get_now_nsec(rtc_state_t *rtc);
 
 void rtc_read(hart_t *core,
-                  rtc_state_t *rtc,
-                  uint32_t addr,
-                  uint8_t width,
-                  uint32_t *value);
+              rtc_state_t *rtc,
+              uint32_t addr,
+              uint8_t width,
+              uint32_t *value);
 
 void rtc_write(hart_t *core,
                rtc_state_t *rtc,
