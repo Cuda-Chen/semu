@@ -241,7 +241,7 @@ static inline void emu_tick_peripherals(emu_state_t *emu)
 
         if (emu->rtc.irq_enabled) {
             uint64_t now_nsec = rtc_get_now_nsec(&emu->rtc);
-            if (rtc_alarm_fire(&emu->rtc, now_nsec)) {
+            if (!emu->rtc.alarm_status && rtc_alarm_fire(&emu->rtc, now_nsec)) {
                 emu->rtc.alarm_status = 1;
                 emu->rtc.interrupt_status = 1;
                 emu_update_rtc_interrupts(vm);

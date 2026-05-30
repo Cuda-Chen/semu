@@ -144,20 +144,18 @@ void rtc_write(hart_t *vm,
 
 void rtc_new(rtc_state_t *rtc)
 {
-    rtc = calloc(1, sizeof(rtc_state_t));
-    assert(rtc);
-
     /*
      * The rtc->time_low/high values can be updated through the RTC_SET_TIME
      * ioctl operation. Therefore, they should be initialized to match the
      * host OS time during initialization.
      */
-    now_nsec = rtc_get_now_nsec(rtc);
-    rtc->time_low = (uint32_t) (now_nsec & MASK(32));
-    rtc->time_high = (uint32_t) (now_nsec >> 32);
+    uint64_t now_nsec_val = rtc_get_now_nsec(rtc);
+    rtc->time_low = (uint32_t) (now_nsec_val & MASK(32));
+    rtc->time_high = (uint32_t) (now_nsec_val >> 32);
 }
 
 void rtc_delete(rtc_state_t *rtc)
 {
-    free(rtc);
+    /* No dynamically allocated memory to free */
+    (void)rtc;
 }
