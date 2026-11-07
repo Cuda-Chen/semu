@@ -12,7 +12,7 @@ A minimalist RISC-V system emulator capable of running Linux the kernel and corr
 - I/O support using VirtIO standard:
     - virtio-blk acquires disk image from the host.
     - virtio-net is mapped as TAP interface.
-    - virtio-snd uses [PortAudio](https://github.com/PortAudio/portaudio) for sound playback on the host.   
+    - virtio-snd uses [PortAudio](https://github.com/PortAudio/portaudio) for sound playback on the host.
     - virtio-input exposes SDL-backed keyboard and mouse devices to the guest.
     - virtio-gpu exposes a minimal 2D DRM/KMS device to the guest. Linux can
       bind the `virtio_gpu` driver and create `/dev/dri/card0`.

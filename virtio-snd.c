@@ -1,9 +1,12 @@
+#include <errno.h>
 #include <inttypes.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 #include <portaudio.h>
 
@@ -21,6 +24,8 @@
 #define PRIV(x) ((virtio_snd_config_t *) x->priv)
 
 #define VSND_CNFA_FRAME_SZ 2
+#define VSND_PCM_CHANNELS_MIN 1
+#define VSND_PCM_CHANNELS_MAX 1
 
 enum {
     VSND_QUEUE_CTRL = 0,
@@ -334,9 +339,20 @@ static int virtio_snd_stream_cb(const void *input,
                                 PaStreamCallbackFlags status_flags,
                                 void *user_data);
 static void virtio_queue_notify_handler(virtio_snd_state_t *vsnd, int index);
-static void __virtio_snd_frame_enqueue(void *payload,
+static bool __virtio_snd_frame_enqueue(void *payload,
                                        uint32_t n,
                                        uint32_t stream_id);
+
+static void virtio_snd_clear_buf_queue(struct list_head *head)
+{
+    vsnd_buf_queue_node_t *node, *tmp = NULL;
+    list_for_each_entry_safe (node, tmp, head, q) {
+        list_del(&node->q);
+        free(node->addr);
+        free(node);
+    }
+}
+
 typedef struct {
     struct virtq_desc vq_desc;
     struct list_head q;
@@ -389,6 +405,8 @@ static uint32_t flush_stream_id = 0;
         uintptr_t base = (uintptr_t) vsnd->ram;                                \
         uint32_t ret_len = 0;                                                  \
         uint8_t bad_msg_err = 0;                                               \
+        bool queued = false;                                                   \
+        (void) queued;                                                         \
         list_for_each_entry (node, &q, q) {                                    \
             uint32_t addr = node->vq_desc.addr;                                \
             uint32_t len = node->vq_desc.len;                                  \
@@ -426,8 +444,9 @@ static uint32_t flush_stream_id = 0;
                                                                                \
             IIF(WRITE)(/* enqueue frames */                                    \
                        void *payload = (void *) (base + addr);                 \
-                       if (bad_msg_err == 0) __virtio_snd_frame_enqueue(       \
-                           payload, len, stream_id);                           \
+                       if (bad_msg_err == 0 && __virtio_snd_frame_enqueue(     \
+                                                   payload, len, stream_id))   \
+                           queued = true;                                      \
                        , /* flush queue */                                     \
                        (void) stream_id;                                       \
                        /* Suppress unused variable warning. */) ret_len +=     \
@@ -437,24 +456,30 @@ static uint32_t flush_stream_id = 0;
             idx++;                                                             \
         }                                                                      \
                                                                                \
-        if (bad_msg_err != 0)                                                  \
-            goto finally;                                                      \
-        IIF(WRITE)(/* enque frames */                                          \
-                   virtio_snd_prop_t *props = &vsnd_props[stream_id];          \
-                   pthread_mutex_lock(&props->lock.lock);                      \
-                   props->lock.buf_ev_notify++;                                \
-                   pthread_cond_signal(&props->lock.readable);                 \
-                   pthread_mutex_unlock(&props->lock.lock);, /* flush queue */ \
-                   )                                                           \
+        if (bad_msg_err == 0) {                                                \
+            IIF(WRITE)(/* enqueue frames */                                    \
+                       if (queued) {                                           \
+                           virtio_snd_prop_t *props = &vsnd_props[stream_id];  \
+                           pthread_mutex_lock(&props->lock.lock);              \
+                           if (!props->lock.releasing) {                       \
+                               props->lock.buf_ev_notify++;                    \
+                               pthread_cond_signal(&props->lock.readable);     \
+                           } else {                                            \
+                               virtio_snd_clear_buf_queue(                     \
+                                   &props->buf_queue_head);                    \
+                           }                                                   \
+                           pthread_mutex_unlock(&props->lock.lock);            \
+                       }, /* flush queue */                                    \
+            )                                                                  \
+        }                                                                      \
                                                                                \
-            /* Tear down the descriptor list and free space. */                \
-            virtq_desc_queue_node_t *tmp = NULL;                               \
+        /* Tear down the descriptor list and free space. */                    \
+        virtq_desc_queue_node_t *tmp = NULL;                                   \
         list_for_each_entry_safe (node, tmp, &q, q) {                          \
             list_del(&node->q);                                                \
             free(node);                                                        \
         }                                                                      \
                                                                                \
-    finally:                                                                   \
         return 0;                                                              \
     } while (0)
 
@@ -502,6 +527,7 @@ static void virtio_snd_update_status(virtio_snd_state_t *vsnd, uint32_t status)
     /* Reset */
     uint32_t *ram = vsnd->ram;
     void *priv = vsnd->priv;
+    bool wake_pending = __atomic_load_n(&vsnd->wake_pending, __ATOMIC_RELAXED);
     uint32_t jacks = PRIV(vsnd)->jacks;
     uint32_t streams = PRIV(vsnd)->streams;
     uint32_t chmaps = PRIV(vsnd)->chmaps;
@@ -509,6 +535,7 @@ static void virtio_snd_update_status(virtio_snd_state_t *vsnd, uint32_t status)
     memset(vsnd, 0, sizeof(*vsnd));
     vsnd->ram = ram;
     vsnd->priv = priv;
+    __atomic_store_n(&vsnd->wake_pending, wake_pending, __ATOMIC_RELAXED);
     PRIV(vsnd)->jacks = jacks;
     PRIV(vsnd)->streams = streams;
     PRIV(vsnd)->chmaps = chmaps;
@@ -557,8 +584,8 @@ static void virtio_snd_read_pcm_info_handler(
         SND_PCM_RATE
 #undef _
         info[i].direction = VIRTIO_SND_D_OUTPUT;
-        info[i].channels_min = 1;
-        info[i].channels_max = 1;
+        info[i].channels_min = VSND_PCM_CHANNELS_MIN;
+        info[i].channels_max = VSND_PCM_CHANNELS_MAX;
         memset(&info[i].padding, 0, sizeof(info[i].padding));
 
         virtio_snd_prop_t *props = &vsnd_props[i];
@@ -569,8 +596,8 @@ static void virtio_snd_read_pcm_info_handler(
         SND_PCM_RATE
 #undef _
         props->p.direction = VIRTIO_SND_D_OUTPUT;
-        props->p.channels_min = 1;
-        props->p.channels_max = 1;
+        props->p.channels_min = VSND_PCM_CHANNELS_MIN;
+        props->p.channels_max = VSND_PCM_CHANNELS_MAX;
         memset(&props->p.padding, 0, sizeof(props->p.padding));
     }
     *plen = cnt * sizeof(*info);
@@ -597,12 +624,16 @@ static void virtio_snd_read_chmap_info_handler(
     *plen = cnt * sizeof(*info);
 }
 
-static void virtio_snd_read_pcm_set_params(
+static uint32_t virtio_snd_read_pcm_set_params(
     const virtio_snd_pcm_set_params_t *query,
     uint32_t *plen)
 {
     const virtio_snd_pcm_set_params_t *request = query;
+    *plen = 0;
     uint32_t id = request->hdr.stream_id;
+    if (id >= VSND_DEV_CNT_MAX)
+        return VIRTIO_SND_S_BAD_MSG;
+
     virtio_snd_prop_t *props = &vsnd_props[id];
     uint32_t code = props->pp.hdr.hdr.code;
     if (code != VIRTIO_SND_R_PCM_RELEASE &&
@@ -611,10 +642,22 @@ static void virtio_snd_read_pcm_set_params(
         fprintf(stderr,
                 "virtio_snd_pcm_set_params with invalid previous state %#08x\n",
                 code);
-        return;
+        return VIRTIO_SND_S_BAD_MSG;
     }
-    /* FIXME: check the valiability of buffer_bytes, period_bytes, channel_min,
-     * and channel_max */
+
+    if (request->channels < VSND_PCM_CHANNELS_MIN ||
+        request->channels > VSND_PCM_CHANNELS_MAX ||
+        request->format != VIRTIO_SND_PCM_FMT_S16 ||
+        request->rate >= ARRAY_SIZE(pcm_rate_tbl) ||
+        pcm_rate_tbl[request->rate] <= 0)
+        return VIRTIO_SND_S_NOT_SUPP;
+
+    uint32_t frame_bytes = (uint32_t) request->channels * VSND_CNFA_FRAME_SZ;
+    if (request->period_bytes == 0 || request->buffer_bytes == 0 ||
+        request->buffer_bytes < request->period_bytes ||
+        (request->period_bytes % frame_bytes) != 0)
+        return VIRTIO_SND_S_BAD_MSG;
+
     props->pp.hdr.hdr.code = VIRTIO_SND_R_PCM_SET_PARAMS;
     props->pp.buffer_bytes = request->buffer_bytes;
     props->pp.period_bytes = request->period_bytes;
@@ -624,14 +667,18 @@ static void virtio_snd_read_pcm_set_params(
     props->pp.rate = request->rate;
     props->pp.padding = request->padding;
 
-    *plen = 0;
+    return VIRTIO_SND_S_OK;
 }
 
-static void virtio_snd_read_pcm_prepare(const virtio_snd_pcm_hdr_t *query,
-                                        uint32_t *plen)
+static uint32_t virtio_snd_read_pcm_prepare(const virtio_snd_pcm_hdr_t *query,
+                                            uint32_t *plen)
 {
     const virtio_snd_pcm_hdr_t *request = query;
+    *plen = 0;
     uint32_t stream_id = request->stream_id;
+    if (stream_id >= VSND_DEV_CNT_MAX)
+        return VIRTIO_SND_S_BAD_MSG;
+
     virtio_snd_prop_t *props = &vsnd_props[stream_id];
     uint32_t code = props->pp.hdr.hdr.code;
     if (code != VIRTIO_SND_R_PCM_RELEASE &&
@@ -641,8 +688,11 @@ static void virtio_snd_read_pcm_prepare(const virtio_snd_pcm_hdr_t *query,
             stderr,
             "virtio_snd_read_pcm_prepare with invalid previous state %#08x\n",
             code);
-        return;
+        return VIRTIO_SND_S_BAD_MSG;
     }
+
+    if (props->pp.channels == 0 || props->pp.period_bytes == 0)
+        return VIRTIO_SND_S_BAD_MSG;
 
     props->pp.hdr.hdr.code = VIRTIO_SND_R_PCM_PREPARE;
     props->v.stream_id = stream_id;
@@ -650,7 +700,8 @@ static void virtio_snd_read_pcm_prepare(const virtio_snd_pcm_hdr_t *query,
     uint32_t rate = pcm_rate_tbl[props->pp.rate];
 
     /* Calculate the period size (in frames) from the guest's period_bytes */
-    uint32_t cnfa_period_frames = props->pp.period_bytes / VSND_CNFA_FRAME_SZ;
+    uint32_t frame_bytes = (uint32_t) props->pp.channels * VSND_CNFA_FRAME_SZ;
+    uint32_t cnfa_period_frames = props->pp.period_bytes / frame_bytes;
 
     INIT_LIST_HEAD(&props->buf_queue_head);
     props->lock.releasing = 0;
@@ -668,23 +719,27 @@ static void virtio_snd_read_pcm_prepare(const virtio_snd_pcm_hdr_t *query,
     if (err != paNoError) {
         fprintf(stderr, "Cannot create PortAudio\n");
         printf("PortAudio error: %s\n", Pa_GetErrorText(err));
-        return;
+        return VIRTIO_SND_S_IO_ERR;
     }
 
-    *plen = 0;
+    return VIRTIO_SND_S_OK;
 }
 
-static void virtio_snd_read_pcm_start(const virtio_snd_pcm_hdr_t *query,
-                                      uint32_t *plen)
+static uint32_t virtio_snd_read_pcm_start(const virtio_snd_pcm_hdr_t *query,
+                                          uint32_t *plen)
 {
     const virtio_snd_pcm_hdr_t *request = query;
+    *plen = 0;
     uint32_t stream_id = request->stream_id;
+    if (stream_id >= VSND_DEV_CNT_MAX)
+        return VIRTIO_SND_S_BAD_MSG;
+
     uint32_t code = vsnd_props[stream_id].pp.hdr.hdr.code;
     if (code != VIRTIO_SND_R_PCM_PREPARE && code != VIRTIO_SND_R_PCM_STOP) {
         fprintf(stderr,
                 "virtio_snd_read_pcm_start with previous invalide stat %#08x\n",
                 code);
-        return;
+        return VIRTIO_SND_S_BAD_MSG;
     }
 
     virtio_snd_prop_t *props = &vsnd_props[stream_id];
@@ -695,59 +750,97 @@ static void virtio_snd_read_pcm_start(const virtio_snd_pcm_hdr_t *query,
     pthread_mutex_unlock(&props->lock.lock);
 
     /* Control the callback to start playing */
-    props->pp.hdr.hdr.code = VIRTIO_SND_R_PCM_START;
     PaError err = Pa_StartStream(props->pa_stream);
     if (err != paNoError) {
+        if (code == VIRTIO_SND_R_PCM_STOP) {
+            pthread_mutex_lock(&props->lock.lock);
+            props->lock.releasing = 1;
+            pthread_mutex_unlock(&props->lock.lock);
+        }
         fprintf(stderr, "get error in pcm_start\n");
         printf("PortAudio error: %s\n", Pa_GetErrorText(err));
-        return;
+        return VIRTIO_SND_S_IO_ERR;
     }
 
-    *plen = 0;
+    props->pp.hdr.hdr.code = VIRTIO_SND_R_PCM_START;
+    return VIRTIO_SND_S_OK;
 }
 
-static void virtio_snd_read_pcm_stop(const virtio_snd_pcm_hdr_t *query,
-                                     uint32_t *plen)
+static uint32_t virtio_snd_read_pcm_stop(const virtio_snd_pcm_hdr_t *query,
+                                         uint32_t *plen)
 {
     const virtio_snd_pcm_hdr_t *request = query;
+    *plen = 0;
     uint32_t stream_id = request->stream_id;
+    if (stream_id >= VSND_DEV_CNT_MAX)
+        return VIRTIO_SND_S_BAD_MSG;
+
     uint32_t code = vsnd_props[stream_id].pp.hdr.hdr.code;
     if (code != VIRTIO_SND_R_PCM_START) {
         fprintf(stderr,
                 "virtio_snd_read_pcm_stop with previous invalid state %#08x\n",
                 code);
-        return;
+        return VIRTIO_SND_S_BAD_MSG;
     }
 
     virtio_snd_prop_t *props = &vsnd_props[stream_id];
 
-    /* Wait for PortAudio to consume all pending buffers before stopping. */
+    uint32_t frame_bytes = (uint32_t) props->pp.channels * VSND_CNFA_FRAME_SZ;
+    uint32_t period_frames = props->pp.period_bytes / frame_bytes;
+    uint32_t rate = pcm_rate_tbl[props->pp.rate];
+    uint64_t wait_ns = ((uint64_t) period_frames * 2ULL * 1000000000ULL) / rate;
+    if (wait_ns < 200000000ULL)
+        wait_ns = 200000000ULL;
+
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    uint64_t total_nsec = (uint64_t) deadline.tv_nsec + wait_ns;
+    deadline.tv_sec += (time_t) (total_nsec / 1000000000ULL);
+    deadline.tv_nsec = (long) (total_nsec % 1000000000ULL);
+
+    /* Wait for PortAudio to consume all pending buffers before stopping,
+     * bounded so a stalled audio backend cannot freeze the emulator forever.
+     */
     pthread_mutex_lock(&props->lock.lock);
-    while (props->lock.buf_ev_notify > 0)
-        pthread_cond_wait(&props->lock.writable, &props->lock.lock);
+    while (props->lock.buf_ev_notify > 0) {
+        if (pthread_cond_timedwait(&props->lock.writable, &props->lock.lock,
+                                   &deadline) == ETIMEDOUT)
+            break;
+    }
     props->lock.releasing = 1;
     pthread_cond_broadcast(&props->lock.readable);
+    pthread_cond_broadcast(&props->lock.writable);
     pthread_mutex_unlock(&props->lock.lock);
 
     /* Control the callback to stop playing */
     props->pp.hdr.hdr.code = VIRTIO_SND_R_PCM_STOP;
     PaError err = Pa_StopStream(props->pa_stream);
+
+    pthread_mutex_lock(&props->lock.lock);
+    virtio_snd_clear_buf_queue(&props->buf_queue_head);
+    props->lock.buf_ev_notify = 0;
+    pthread_mutex_unlock(&props->lock.lock);
+
     if (err != paNoError) {
         fprintf(stderr, "get error in pcm_stop\n");
         printf("PortAudio error: %s\n", Pa_GetErrorText(err));
-        return;
+        return VIRTIO_SND_S_IO_ERR;
     }
 
-    *plen = 0;
+    return VIRTIO_SND_S_OK;
 }
 
 #define VSND_FLUSH_QUEUE 0x4
-static void virtio_snd_read_pcm_release(const virtio_snd_pcm_hdr_t *query,
-                                        uint32_t *plen,
-                                        virtio_snd_state_t *vsnd)
+static uint32_t virtio_snd_read_pcm_release(const virtio_snd_pcm_hdr_t *query,
+                                            uint32_t *plen,
+                                            virtio_snd_state_t *vsnd)
 {
     const virtio_snd_pcm_hdr_t *request = query;
+    *plen = 0;
     uint32_t stream_id = request->stream_id;
+    if (stream_id >= VSND_DEV_CNT_MAX)
+        return VIRTIO_SND_S_BAD_MSG;
+
     virtio_snd_prop_t *props = &vsnd_props[stream_id];
     uint32_t code = props->pp.hdr.hdr.code;
     if (code != VIRTIO_SND_R_PCM_PREPARE && code != VIRTIO_SND_R_PCM_STOP) {
@@ -755,7 +848,7 @@ static void virtio_snd_read_pcm_release(const virtio_snd_pcm_hdr_t *query,
             stderr,
             "virtio_snd_read_pcm_release with previous invalid state %#08x\n",
             code);
-        return;
+        return VIRTIO_SND_S_BAD_MSG;
     }
 
     props->pp.hdr.hdr.code = VIRTIO_SND_R_PCM_RELEASE;
@@ -769,14 +862,10 @@ static void virtio_snd_read_pcm_release(const virtio_snd_pcm_hdr_t *query,
     pthread_cond_broadcast(&props->lock.writable);
     pthread_mutex_unlock(&props->lock.lock);
 
-    vsnd_buf_queue_node_t *tmp = NULL;
-    vsnd_buf_queue_node_t *node;
-    if (!list_empty(&props->buf_queue_head)) {
-        list_for_each_entry_safe (node, tmp, &props->buf_queue_head, q) {
-            list_del(&node->q);
-            free(node);
-        }
-    }
+    pthread_mutex_lock(&props->lock.lock);
+    virtio_snd_clear_buf_queue(&props->buf_queue_head);
+    props->lock.buf_ev_notify = 0;
+    pthread_mutex_unlock(&props->lock.lock);
 
     PaError err = Pa_CloseStream(props->pa_stream);
     if (err != paNoError) {
@@ -794,7 +883,7 @@ static void virtio_snd_read_pcm_release(const virtio_snd_pcm_hdr_t *query,
      */
     virtio_queue_notify_handler(vsnd, VSND_FLUSH_QUEUE | 0x2);
 
-    *plen = 0;
+    return VIRTIO_SND_S_OK;
 }
 
 static void __virtio_snd_frame_dequeue(void *out,
@@ -823,7 +912,8 @@ static void __virtio_snd_frame_dequeue(void *out,
         uint32_t len =
             left < actual ? left : actual; /* Naive min implementation */
 
-        memcpy(out + written_bytes, node->addr + node->pos, len);
+        memcpy((uint8_t *) out + written_bytes,
+               (uint8_t *) node->addr + node->pos, len);
 
         written_bytes += len;
         node->pos += len;
@@ -837,6 +927,9 @@ static void __virtio_snd_frame_dequeue(void *out,
     props->lock.buf_ev_notify--;
     pthread_cond_signal(&props->lock.writable);
     pthread_mutex_unlock(&props->lock.lock);
+
+    if (written_bytes < n)
+        memset((uint8_t *) out + written_bytes, 0, n - written_bytes);
 }
 
 static int virtio_snd_stream_cb(const void *input,
@@ -902,6 +995,8 @@ static int virtio_snd_ctrl_desc_handler(virtio_snd_state_t *vsnd,
      */
     void *info = (void *) (uintptr_t) vsnd->ram + vq_desc[2].addr;
 
+    uint32_t status = VIRTIO_SND_S_OK;
+
     /* Process the data */
     switch (type) {
     case VIRTIO_SND_R_JACK_INFO:
@@ -914,19 +1009,19 @@ static int virtio_snd_ctrl_desc_handler(virtio_snd_state_t *vsnd,
         virtio_snd_read_chmap_info_handler(info, query, plen);
         break;
     case VIRTIO_SND_R_PCM_SET_PARAMS:
-        virtio_snd_read_pcm_set_params(query, plen);
+        status = virtio_snd_read_pcm_set_params(query, plen);
         break;
     case VIRTIO_SND_R_PCM_PREPARE:
-        virtio_snd_read_pcm_prepare(query, plen);
+        status = virtio_snd_read_pcm_prepare(query, plen);
         break;
     case VIRTIO_SND_R_PCM_RELEASE:
-        virtio_snd_read_pcm_release(query, plen, vsnd);
+        status = virtio_snd_read_pcm_release(query, plen, vsnd);
         break;
     case VIRTIO_SND_R_PCM_START:
-        virtio_snd_read_pcm_start(query, plen);
+        status = virtio_snd_read_pcm_start(query, plen);
         break;
     case VIRTIO_SND_R_PCM_STOP:
-        virtio_snd_read_pcm_stop(query, plen);
+        status = virtio_snd_read_pcm_stop(query, plen);
         break;
     default:
         fprintf(stderr, "%d: unsupported virtio-snd operation!\n", type);
@@ -936,7 +1031,7 @@ static int virtio_snd_ctrl_desc_handler(virtio_snd_state_t *vsnd,
     }
 
     /* Return the device status */
-    response->code = VIRTIO_SND_S_OK;
+    response->code = status;
 
     return 0;
 }
@@ -956,11 +1051,12 @@ static vsnd_virtq_cb __virtio_snd_queue_op_tbl[8] = {
     NULL,                             /* flush RX queue */
 };
 
-static void __virtio_snd_frame_enqueue(void *payload,
+static bool __virtio_snd_frame_enqueue(void *payload,
                                        uint32_t n,
                                        uint32_t stream_id)
 {
     virtio_snd_prop_t *props = &vsnd_props[stream_id];
+    bool queued = false;
 
     pthread_mutex_lock(&props->lock.lock);
     while (props->lock.buf_ev_notify > 0 && !props->lock.releasing)
@@ -968,7 +1064,7 @@ static void __virtio_snd_frame_enqueue(void *payload,
 
     if (props->lock.releasing) {
         pthread_mutex_unlock(&props->lock.lock);
-        return;
+        return false;
     }
 
     /* Add a PCM frame to queue */
@@ -983,7 +1079,7 @@ static void __virtio_snd_frame_enqueue(void *payload,
     vsnd_buf_queue_node_t *node = malloc(sizeof(*node));
     if (!node)
         goto tx_frame_enqueue_final;
-    node->addr = malloc(sizeof(*node->addr) * n);
+    node->addr = malloc(n);
     if (!node->addr) {
         free(node);
         goto tx_frame_enqueue_final;
@@ -992,9 +1088,11 @@ static void __virtio_snd_frame_enqueue(void *payload,
     node->len = n;
     node->pos = 0;
     list_push(&node->q, &props->buf_queue_head);
+    queued = true;
 
 tx_frame_enqueue_final:
     pthread_mutex_unlock(&props->lock.lock);
+    return queued;
 }
 
 static void virtio_queue_notify_handler(virtio_snd_state_t *vsnd, int index)
@@ -1052,19 +1150,26 @@ static void virtio_queue_notify_handler(virtio_snd_state_t *vsnd, int index)
         queue->last_avail++;
         new_used++;
         /* Check le32 len field of struct virtq_used_elem on the spec  */
-        vsnd->ram[queue->QueueUsed] &= MASK(16); /* Reset low 16 bits to zero */
-        vsnd->ram[queue->QueueUsed] |= ((uint32_t) new_used) << 16; /* len */
+        uint32_t used_hdr = ram[queue->QueueUsed] & MASK(16);
+        __atomic_store_n(&ram[queue->QueueUsed],
+                         used_hdr | ((uint32_t) new_used << 16),
+                         __ATOMIC_RELEASE);
 
         /* Publish used-ring writes before making the IRQ visible to the guest.
          */
         if (!(ram[queue->QueueAvail] & 1)) {
             __atomic_fetch_or(&vsnd->InterruptStatus, VIRTIO_INT__USED_RING,
-                              __ATOMIC_RELEASE);
-            emu_state_t *emu = container_of(vsnd, emu_state_t, vsnd);
-            if (emu->wake_fd[1] >= 0) {
-                char wake_byte = 1;
-                if (write(emu->wake_fd[1], &wake_byte, 1) < 0) {
-                    /* ignore error */
+                              __ATOMIC_SEQ_CST);
+            if (index == VSND_QUEUE_TX) {
+                emu_state_t *emu = container_of(vsnd, emu_state_t, vsnd);
+                int wake_fd =
+                    __atomic_load_n(&emu->wake_fd[1], __ATOMIC_ACQUIRE);
+                if (wake_fd >= 0 &&
+                    !__atomic_exchange_n(&vsnd->wake_pending, true,
+                                         __ATOMIC_SEQ_CST)) {
+                    char wake_byte = 1;
+                    ssize_t n = write(wake_fd, &wake_byte, 1);
+                    (void) n;
                 }
             }
         }

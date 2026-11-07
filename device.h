@@ -464,6 +464,7 @@ typedef struct {
     /* status */
     uint32_t Status;
     uint32_t InterruptStatus;
+    bool wake_pending;
     /* supplied by environment */
     uint32_t *ram;
     /* implementation-specific */
