@@ -323,9 +323,11 @@ static int vsnd_dev_cnt = 0;
 
 static pthread_mutex_t virtio_snd_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t virtio_snd_tx_cond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t virtio_snd_tx_done = PTHREAD_COND_INITIALIZER;
 static pthread_t virtio_snd_tx_tid;
 static bool tx_thread_running;
 static bool tx_thread_stop;
+static bool tx_busy;
 static int tx_ev_notify;
 
 /* vsnd virtq callback type */
@@ -439,13 +441,13 @@ static uint32_t flush_stream_id = 0;
         }                                                                      \
                                                                                \
         IIF(WRITE)(/* enqueue frames */                                        \
-                   if (bad_msg_err == 0 && ret_len > 0)(void)                  \
-                       __virtio_snd_frame_enqueue(&q, cnt, base, ret_len,      \
-                                                  stream_id);                  \
+                   bool queued = bad_msg_err == 0 && ret_len > 0 &&            \
+                                 __virtio_snd_frame_enqueue(                   \
+                                     &q, cnt, base, ret_len, stream_id);       \
                    if (response) {                                             \
-                       response->status = bad_msg_err ? VIRTIO_SND_S_IO_ERR    \
-                                                      : VIRTIO_SND_S_OK;       \
-                       response->latency_bytes = ret_len;                      \
+                       response->status =                                      \
+                           queued ? VIRTIO_SND_S_OK : VIRTIO_SND_S_IO_ERR;     \
+                       response->latency_bytes = queued ? ret_len : 0;         \
                        *plen = sizeof(*response);                              \
                    }, /* flush queue */                                        \
                    if (bad_msg_err == 1) {                                     \
@@ -656,6 +658,25 @@ static uint32_t virtio_snd_read_pcm_set_params(
     return VIRTIO_SND_S_OK;
 }
 
+static bool virtio_snd_wait_tx_idle(const struct timespec *deadline)
+{
+    bool idle = true;
+    pthread_mutex_lock(&virtio_snd_mutex);
+    while (tx_thread_running && (tx_ev_notify > 0 || tx_busy)) {
+        if (deadline) {
+            if (pthread_cond_timedwait(&virtio_snd_tx_done, &virtio_snd_mutex,
+                                       deadline) == ETIMEDOUT) {
+                idle = (tx_ev_notify == 0 && !tx_busy);
+                break;
+            }
+        } else {
+            pthread_cond_wait(&virtio_snd_tx_done, &virtio_snd_mutex);
+        }
+    }
+    pthread_mutex_unlock(&virtio_snd_mutex);
+    return idle;
+}
+
 static uint32_t virtio_snd_read_pcm_prepare(const virtio_snd_pcm_hdr_t *query,
                                             uint32_t *plen)
 {
@@ -688,6 +709,14 @@ static uint32_t virtio_snd_read_pcm_prepare(const virtio_snd_pcm_hdr_t *query,
     /* Calculate the period size (in frames) from the guest's period_bytes */
     uint32_t frame_bytes = (uint32_t) props->pp.channels * VSND_CNFA_FRAME_SZ;
     uint32_t cnfa_period_frames = props->pp.period_bytes / frame_bytes;
+
+    pthread_mutex_lock(&props->lock.lock);
+    props->lock.releasing = 1;
+    pthread_cond_broadcast(&props->lock.readable);
+    pthread_cond_broadcast(&props->lock.writable);
+    pthread_mutex_unlock(&props->lock.lock);
+
+    virtio_snd_wait_tx_idle(NULL);
 
     if (props->pa_stream) {
         Pa_CloseStream(props->pa_stream);
@@ -783,11 +812,15 @@ static uint32_t virtio_snd_read_pcm_stop(const virtio_snd_pcm_hdr_t *query,
     virtio_snd_prop_t *props = &vsnd_props[stream_id];
 
     uint32_t frame_bytes = (uint32_t) props->pp.channels * VSND_CNFA_FRAME_SZ;
-    uint32_t period_frames = props->pp.period_bytes / frame_bytes;
+    uint64_t drain_frames =
+        ((uint64_t) props->pp.buffer_bytes + props->pp.period_bytes) /
+        frame_bytes;
     uint32_t rate = pcm_rate_tbl[props->pp.rate];
-    uint64_t wait_ns = ((uint64_t) period_frames * 2ULL * 1000000000ULL) / rate;
+    uint64_t wait_ns = (drain_frames * 1000000000ULL) / rate;
     if (wait_ns < 200000000ULL)
         wait_ns = 200000000ULL;
+    else if (wait_ns > 2000000000ULL)
+        wait_ns = 2000000000ULL;
 
     struct timespec deadline;
     clock_gettime(CLOCK_REALTIME, &deadline);
@@ -795,11 +828,14 @@ static uint32_t virtio_snd_read_pcm_stop(const virtio_snd_pcm_hdr_t *query,
     deadline.tv_sec += (time_t) (total_nsec / 1000000000ULL);
     deadline.tv_nsec = (long) (total_nsec % 1000000000ULL);
 
-    /* Wait for PortAudio to consume all pending buffers before stopping,
-     * bounded so a stalled audio backend cannot freeze the emulator forever.
+    /* Wait for in-flight TX submissions to be enqueued and for PortAudio to
+     * consume all pending buffers before stopping, bounded so a stalled audio
+     * backend cannot freeze the emulator forever.
      */
+    bool drained = virtio_snd_wait_tx_idle(&deadline);
+
     pthread_mutex_lock(&props->lock.lock);
-    while (props->lock.buf_ev_notify > 0) {
+    while (drained && props->lock.buf_ev_notify > 0) {
         if (pthread_cond_timedwait(&props->lock.writable, &props->lock.lock,
                                    &deadline) == ETIMEDOUT)
             break;
@@ -808,6 +844,9 @@ static uint32_t virtio_snd_read_pcm_stop(const virtio_snd_pcm_hdr_t *query,
     pthread_cond_broadcast(&props->lock.readable);
     pthread_cond_broadcast(&props->lock.writable);
     pthread_mutex_unlock(&props->lock.lock);
+
+    if (!drained)
+        virtio_snd_wait_tx_idle(NULL);
 
     /* Control the callback to stop playing */
     props->pp.hdr.hdr.code = VIRTIO_SND_R_PCM_STOP;
@@ -858,6 +897,8 @@ static uint32_t virtio_snd_read_pcm_release(const virtio_snd_pcm_hdr_t *query,
     pthread_cond_broadcast(&props->lock.readable);
     pthread_cond_broadcast(&props->lock.writable);
     pthread_mutex_unlock(&props->lock.lock);
+
+    virtio_snd_wait_tx_idle(NULL);
 
     pthread_mutex_lock(&props->lock.lock);
     virtio_snd_clear_buf_queue(&props->buf_queue_head);
@@ -1206,10 +1247,16 @@ static void *func(void *args)
             break;
         }
 
-        tx_ev_notify--;
+        tx_ev_notify = 0;
+        tx_busy = true;
         pthread_mutex_unlock(&virtio_snd_mutex);
 
-        virtio_queue_notify_handler(vsnd, 2);
+        virtio_queue_notify_handler(vsnd, VSND_QUEUE_TX);
+
+        pthread_mutex_lock(&virtio_snd_mutex);
+        tx_busy = false;
+        pthread_cond_broadcast(&virtio_snd_tx_done);
+        pthread_mutex_unlock(&virtio_snd_mutex);
     }
     return NULL;
 }
@@ -1438,24 +1485,31 @@ bool virtio_snd_init(virtio_snd_state_t *vsnd)
 
     pthread_mutex_lock(&virtio_snd_mutex);
     tx_ev_notify = 0;
+    tx_busy = false;
     tx_thread_stop = false;
+    tx_thread_running = true;
     pthread_mutex_unlock(&virtio_snd_mutex);
 
     if (pthread_create(&virtio_snd_tx_tid, NULL, func, vsnd) != 0) {
+        pthread_mutex_lock(&virtio_snd_mutex);
+        tx_thread_running = false;
+        pthread_mutex_unlock(&virtio_snd_mutex);
         fprintf(stderr, "cannot create TX thread\n");
         vsnd->priv = NULL;
         vsnd_dev_cnt--;
         Pa_Terminate();
         return false;
     }
-    tx_thread_running = true;
 
     return true;
 }
 
 void virtio_snd_cleanup(virtio_snd_state_t *vsnd)
 {
-    if (!tx_thread_running)
+    pthread_mutex_lock(&virtio_snd_mutex);
+    bool running = tx_thread_running;
+    pthread_mutex_unlock(&virtio_snd_mutex);
+    if (!running)
         return;
 
     /* Unblock any stream waiters so the TX thread cannot stay parked in
@@ -1476,7 +1530,12 @@ void virtio_snd_cleanup(virtio_snd_state_t *vsnd)
     pthread_mutex_unlock(&virtio_snd_mutex);
 
     pthread_join(virtio_snd_tx_tid, NULL);
+
+    pthread_mutex_lock(&virtio_snd_mutex);
     tx_thread_running = false;
+    tx_ev_notify = 0;
+    tx_busy = false;
+    pthread_mutex_unlock(&virtio_snd_mutex);
 
     for (int i = 0; i < VSND_DEV_CNT_MAX; i++) {
         virtio_snd_prop_t *props = &vsnd_props[i];

@@ -903,7 +903,7 @@ static int validate_default_dtb_boot_options(const char *dtb_file,
     } while (0)
 
 #if SEMU_HAS(VIRTIOINPUT) || SEMU_HAS(VIRTIOGPU) || SEMU_HAS(VIRTIOSND)
-static void semu_close_wake_pipe(emu_state_t *emu);
+static void semu_cleanup_backends(emu_state_t *emu);
 #endif
 
 static int semu_init(emu_state_t *emu, int argc, char **argv)
@@ -1088,10 +1088,7 @@ static int semu_init(emu_state_t *emu, int argc, char **argv)
     if (vm->n_hart > 1 && need_wake_pipe) {
         if (pipe(emu->wake_fd) < 0) {
             perror("failed to create emulator wake pipe");
-            semu_close_wake_pipe(emu);
-#if SEMU_HAS(VIRTIOINPUT) || SEMU_HAS(VIRTIOGPU)
-            g_window.window_cleanup();
-#endif
+            semu_cleanup_backends(emu);
             return EXIT_FAILURE;
         }
 
@@ -1105,10 +1102,7 @@ static int semu_init(emu_state_t *emu, int argc, char **argv)
             perror(
                 "failed to configure emulator wake pipe write end as "
                 "non-blocking");
-            semu_close_wake_pipe(emu);
-#if SEMU_HAS(VIRTIOINPUT) || SEMU_HAS(VIRTIOGPU)
-            g_window.window_cleanup();
-#endif
+            semu_cleanup_backends(emu);
             return EXIT_FAILURE;
         }
     }
@@ -1128,10 +1122,7 @@ static int semu_init(emu_state_t *emu, int argc, char **argv)
             fprintf(stderr, "Failed to initialize coroutine subsystem\n");
             fflush(stderr);
 #if SEMU_HAS(VIRTIOINPUT) || SEMU_HAS(VIRTIOGPU) || SEMU_HAS(VIRTIOSND)
-            semu_close_wake_pipe(emu);
-#endif
-#if SEMU_HAS(VIRTIOINPUT) || SEMU_HAS(VIRTIOGPU)
-            g_window.window_cleanup();
+            semu_cleanup_backends(emu);
 #endif
             return 1;
         }
@@ -1142,10 +1133,7 @@ static int semu_init(emu_state_t *emu, int argc, char **argv)
                 fprintf(stderr, "Failed to create coroutine for hart %u\n", i);
                 coro_cleanup();
 #if SEMU_HAS(VIRTIOINPUT) || SEMU_HAS(VIRTIOGPU) || SEMU_HAS(VIRTIOSND)
-                semu_close_wake_pipe(emu);
-#endif
-#if SEMU_HAS(VIRTIOINPUT) || SEMU_HAS(VIRTIOGPU)
-                g_window.window_cleanup();
+                semu_cleanup_backends(emu);
 #endif
                 return 1;
             }
@@ -1352,9 +1340,6 @@ static void semu_close_wake_pipe(emu_state_t *emu)
     if (g_window.window_set_wake_fd)
         g_window.window_set_wake_fd(-1);
 #endif
-#if SEMU_HAS(VIRTIOSND)
-    virtio_snd_cleanup(&emu->vsnd);
-#endif
 
     int wfd = __atomic_exchange_n(&emu->wake_fd[1], -1, __ATOMIC_ACQ_REL);
     if (wfd >= 0)
@@ -1362,6 +1347,17 @@ static void semu_close_wake_pipe(emu_state_t *emu)
     int rfd = __atomic_exchange_n(&emu->wake_fd[0], -1, __ATOMIC_ACQ_REL);
     if (rfd >= 0)
         close(rfd);
+}
+
+static void semu_cleanup_backends(emu_state_t *emu)
+{
+#if SEMU_HAS(VIRTIOSND)
+    virtio_snd_cleanup(&emu->vsnd);
+#endif
+    semu_close_wake_pipe(emu);
+#if SEMU_HAS(VIRTIOINPUT) || SEMU_HAS(VIRTIOGPU)
+    g_window.window_cleanup();
+#endif
 }
 #endif
 
@@ -2029,8 +2025,7 @@ int main(int argc, char **argv)
 
         if (pthread_create(&emu_thread, NULL, emu_thread_func, &emu) != 0) {
             fprintf(stderr, "Failed to create emulator thread\n");
-            semu_close_wake_pipe(&emu);
-            g_window.window_cleanup();
+            semu_cleanup_backends(&emu);
             return 1;
         }
 
@@ -2054,10 +2049,7 @@ int main(int argc, char **argv)
     }
 
 #if SEMU_HAS(VIRTIOINPUT) || SEMU_HAS(VIRTIOGPU) || SEMU_HAS(VIRTIOSND)
-    semu_close_wake_pipe(&emu);
-#endif
-#if SEMU_HAS(VIRTIOINPUT) || SEMU_HAS(VIRTIOGPU)
-    g_window.window_cleanup();
+    semu_cleanup_backends(&emu);
 #endif
 
 #ifdef MMU_CACHE_STATS
