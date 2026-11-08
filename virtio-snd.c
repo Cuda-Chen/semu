@@ -329,6 +329,7 @@ static bool tx_thread_running;
 static bool tx_thread_stop;
 static bool tx_busy;
 static int tx_ev_notify;
+static bool pa_initialized;
 
 /* vsnd virtq callback type */
 typedef int (*vsnd_virtq_cb)(virtio_snd_state_t *,       /* vsnd state */
@@ -508,6 +509,9 @@ static inline uint32_t vsnd_preprocess(virtio_snd_state_t *vsnd, uint32_t addr)
 
 static void virtio_snd_update_status(virtio_snd_state_t *vsnd, uint32_t status)
 {
+    if (!vsnd || !vsnd->priv)
+        return;
+
     __atomic_fetch_or(&vsnd->Status, status, __ATOMIC_RELEASE);
     if (status)
         return;
@@ -701,7 +705,6 @@ static uint32_t virtio_snd_read_pcm_prepare(const virtio_snd_pcm_hdr_t *query,
     if (props->pp.channels == 0 || props->pp.period_bytes == 0)
         return VIRTIO_SND_S_BAD_MSG;
 
-    props->pp.hdr.hdr.code = VIRTIO_SND_R_PCM_PREPARE;
     props->v.stream_id = stream_id;
 
     uint32_t rate = pcm_rate_tbl[props->pp.rate];
@@ -731,6 +734,13 @@ static uint32_t virtio_snd_read_pcm_prepare(const virtio_snd_pcm_hdr_t *query,
     props->lock.buf_ev_notify = 0;
     pthread_mutex_unlock(&props->lock.lock);
 
+    if (!pa_initialized) {
+        props->pa_stream = NULL;
+        fprintf(stderr,
+                "Cannot create PortAudio: audio backend not available\n");
+        return VIRTIO_SND_S_IO_ERR;
+    }
+
     PaStreamParameters params = {
         .device = Pa_GetDefaultOutputDevice(),
         .channelCount = props->pp.channels,
@@ -748,6 +758,7 @@ static uint32_t virtio_snd_read_pcm_prepare(const virtio_snd_pcm_hdr_t *query,
         return VIRTIO_SND_S_IO_ERR;
     }
 
+    props->pp.hdr.hdr.code = VIRTIO_SND_R_PCM_PREPARE;
     return VIRTIO_SND_S_OK;
 }
 
@@ -769,6 +780,11 @@ static uint32_t virtio_snd_read_pcm_start(const virtio_snd_pcm_hdr_t *query,
     }
 
     virtio_snd_prop_t *props = &vsnd_props[stream_id];
+    if (!props->pa_stream) {
+        fprintf(stderr,
+                "virtio_snd_read_pcm_start with uninitialized stream\n");
+        return VIRTIO_SND_S_IO_ERR;
+    }
 
     /* Clear the releasing flag in case we are restarting from a STOP state */
     pthread_mutex_lock(&props->lock.lock);
@@ -817,10 +833,19 @@ static uint32_t virtio_snd_read_pcm_stop(const virtio_snd_pcm_hdr_t *query,
         frame_bytes;
     uint32_t rate = pcm_rate_tbl[props->pp.rate];
     uint64_t wait_ns = (drain_frames * 1000000000ULL) / rate;
+    /* Cap the drain so a stalled backend cannot freeze the emulator, but never
+     * below one period plus slack, or STOP would discard the final period.
+     */
+    uint64_t period_ns =
+        ((uint64_t) (props->pp.period_bytes / frame_bytes) * 1000000000ULL) /
+        rate;
+    uint64_t max_wait_ns = period_ns + 200000000ULL;
+    if (max_wait_ns < 2000000000ULL)
+        max_wait_ns = 2000000000ULL;
     if (wait_ns < 200000000ULL)
         wait_ns = 200000000ULL;
-    else if (wait_ns > 2000000000ULL)
-        wait_ns = 2000000000ULL;
+    else if (wait_ns > max_wait_ns)
+        wait_ns = max_wait_ns;
 
     struct timespec deadline;
     clock_gettime(CLOCK_REALTIME, &deadline);
@@ -1265,6 +1290,9 @@ static bool virtio_snd_reg_read(virtio_snd_state_t *vsnd,
                                 uint32_t addr,
                                 uint32_t *value)
 {
+    if (!vsnd || !vsnd->priv)
+        return false;
+
 #define _(reg) VIRTIO_##reg
     switch (addr) {
     case _(MagicValue):
@@ -1315,6 +1343,9 @@ static bool virtio_snd_reg_write(virtio_snd_state_t *vsnd,
                                  uint32_t addr,
                                  uint32_t value)
 {
+    if (!vsnd || !vsnd->priv)
+        return false;
+
 #define _(reg) VIRTIO_##reg
     switch (addr) {
     case _(DeviceFeaturesSel):
@@ -1457,15 +1488,6 @@ bool virtio_snd_init(virtio_snd_state_t *vsnd)
         return false;
     }
 
-    /* Initialize PortAudio before spawning the worker thread so a failed init
-     * never leaves a background thread running.
-     */
-    PaError err = Pa_Initialize();
-    if (err != paNoError) {
-        printf("PortAudio error: %s\n", Pa_GetErrorText(err));
-        return false;
-    }
-
     for (int i = 0; i < VSND_DEV_CNT_MAX; i++) {
         INIT_LIST_HEAD(&vsnd_props[i].buf_queue_head);
         vsnd_props[i].pa_stream = NULL;
@@ -1497,9 +1519,17 @@ bool virtio_snd_init(virtio_snd_state_t *vsnd)
         fprintf(stderr, "cannot create TX thread\n");
         vsnd->priv = NULL;
         vsnd_dev_cnt--;
-        Pa_Terminate();
         return false;
     }
+
+    /* Initialize PortAudio */
+    PaError err = Pa_Initialize();
+    if (err != paNoError) {
+        printf("PortAudio error: %s\n", Pa_GetErrorText(err));
+        pa_initialized = false;
+        return false;
+    }
+    pa_initialized = true;
 
     return true;
 }
@@ -1550,7 +1580,10 @@ void virtio_snd_cleanup(virtio_snd_state_t *vsnd)
         pthread_mutex_unlock(&props->lock.lock);
     }
 
-    Pa_Terminate();
+    if (pa_initialized) {
+        Pa_Terminate();
+        pa_initialized = false;
+    }
 
     if (vsnd && vsnd->priv && vsnd_dev_cnt > 0) {
         vsnd->priv = NULL;
